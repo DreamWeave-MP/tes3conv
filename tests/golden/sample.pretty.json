@@ -1,0 +1,231 @@
+[
+  {
+    "type": "Header",
+    "flags": "",
+    "version": 1.3,
+    "file_type": "Esm",
+    "author": "me",
+    "description": "two\nlines",
+    "num_objects": 99,
+    "masters": [
+      [
+        "Morrowind.esm",
+        79837557
+      ]
+    ]
+  },
+  {
+    "type": "GameSetting",
+    "flags": "",
+    "id": "iCount",
+    "value": {
+      "type": "Integer",
+      "data": -7
+    }
+  },
+  {
+    "type": "GameSetting",
+    "flags": "",
+    "id": "sCtl",
+    "value": {
+      "type": "String",
+      "data": "a\u0001b\u001fcdé’e\"\\/\b\f\n\r\t"
+    }
+  },
+  {
+    "type": "GlobalVariable",
+    "flags": "",
+    "id": "big",
+    "value": {
+      "type": "Float",
+      "data": 1e+16
+    }
+  },
+  {
+    "type": "Static",
+    "flags": "DELETED | PERSISTENT | 0x40",
+    "id": "alpha",
+    "mesh": "a.nif"
+  },
+  {
+    "type": "Static",
+    "flags": "",
+    "id": "zeta",
+    "mesh": "z.nif"
+  },
+  {
+    "type": "PathGrid",
+    "flags": "",
+    "cell": "x",
+    "data": {
+      "grid": [
+        0,
+        -3
+      ],
+      "granularity": 1024,
+      "point_count": 0
+    },
+    "points": [],
+    "connections": "AAAAAA=="
+  },
+  {
+    "type": "Cell",
+    "flags": "",
+    "name": "x",
+    "data": {
+      "flags": "IS_INTERIOR",
+      "grid": [
+        0,
+        0
+      ]
+    },
+    "water_height": -1.5,
+    "references": [
+      {
+        "mast_index": 0,
+        "refr_index": 1,
+        "id": "p",
+        "temporary": false,
+        "translation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "mast_index": 0,
+        "refr_index": 7,
+        "id": "door",
+        "temporary": true,
+        "translation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "destination": {
+          "translation": [
+            1.0,
+            2.0,
+            3.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "cell": "y"
+        }
+      },
+      {
+        "mast_index": 1,
+        "refr_index": 9,
+        "id": "m",
+        "temporary": true,
+        "translation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "object_count": 1
+      },
+      {
+        "mast_index": 0,
+        "refr_index": 2,
+        "id": "a",
+        "temporary": true,
+        "translation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "object_count": 1
+      },
+      {
+        "mast_index": 0,
+        "refr_index": 5,
+        "id": "dup",
+        "temporary": true,
+        "translation": [
+          1.25,
+          -4096.123,
+          0.1
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          3.1415927
+        ],
+        "scale": 0.5
+      }
+    ]
+  },
+  {
+    "type": "SoundGen",
+    "flags": "",
+    "id": "sg",
+    "sound_gen_type": "LeftFoot",
+    "creature": "rat",
+    "sound": "snd"
+  },
+  {
+    "type": "Dialogue",
+    "flags": "",
+    "id": "topic b",
+    "dialogue_type": "Topic"
+  },
+  {
+    "type": "Dialogue",
+    "flags": "",
+    "id": "topic a",
+    "dialogue_type": "Topic"
+  },
+  {
+    "type": "ScriptConfigList",
+    "scripts": [
+      {
+        "path": "scripts/b.lua",
+        "init_data": "AAAAAA==",
+        "flags": "CUSTOM | PLAYER",
+        "types": [
+          "NPC_"
+        ],
+        "records": [
+          {
+            "attach": true,
+            "id": "player",
+            "data": "AAAAAA=="
+          }
+        ],
+        "instances": [
+          {
+            "attach": false,
+            "mast_idx": 1,
+            "ref_idx": 5,
+            "data": "AAAAAA=="
+          }
+        ]
+      }
+    ],
+    "flags": ""
+  }
+]

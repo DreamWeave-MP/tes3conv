@@ -1,0 +1,426 @@
+--!strict
+--!native
+-- tes3conv's JSON text and its plugins, against what tes3conv 0.4.1 itself wrote. Every file
+-- under `golden/` but `sample.json`, which is written by hand, came out of the program:
+--
+--   all_types.json, all_types.compact.json   tes3conv [-c] assets/all_types.esp
+--   sample.pretty.json, sample.compact.json  tes3conv [-c] golden/sample.json
+--   sample.esp, sample.esm                   tes3conv golden/sample.json <that name>
+--   sample.esp.compact.json                  tes3conv -c golden/sample.esp
+--
+-- and so did every text and digest written out below. The program is never run from here.
+local bytes = require '@dream/bytes'
+local tes3 = require '@tes3'
+local tes3conv = require '@tes3conv'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+type Record = { [string | number]: any }
+
+local Compact = { compact = true }
+
+-- What tes3conv wrote for `floats()`: each file's length and SHA-256.
+local FloatsCompact = {
+  size = 1922660,
+  digest = '6e15b22f16bc0dd15788230e67aa997ef3540149329a4d01119094d3b19e1623',
+}
+
+local FloatsPretty = {
+  size = 2942715,
+  digest = 'fa4862e3142213993ca9d95f4a9fd12c4a6104b8f33b4a401c53f7a570d8c149',
+}
+
+local FloatsPlugin = {
+  size = 1040324,
+  digest = '43d8e0fc8bfed5bf349a957595bff67d0a837040957da33a4a72ef4a23cfbc08',
+}
+
+-- Numbers a document can hold, and how tes3conv spells the f32 each is read into.
+local Spellings: { { value: number, text: string } } = {
+  { value = 0, text = '0.0' },
+  { value = -0.0, text = '-0.0' },
+  { value = 7, text = '7.0' },
+  { value = -1.5, text = '-1.5' },
+  { value = 0.5, text = '0.5' },
+  { value = 0.1, text = '0.1' },
+  { value = 1.3, text = '1.3' },
+  { value = 1.25, text = '1.25' },
+  { value = -4096.123, text = '-4096.123' },
+  { value = 3.1415927, text = '3.1415927' },
+  { value = 16777216, text = '16777216.0' },
+  { value = 123456789012, text = '123456790000.0' },
+  { value = 1e12, text = '1000000000000.0' },
+  { value = 1234567890123, text = '1234568000000.0' },
+  { value = 1e13, text = '1e+13' },
+  { value = 12345678901234, text = '1.2345679e+13' },
+  { value = 1e16, text = '1e+16' },
+  { value = 2e22, text = '2e+22' },
+  { value = 3.4028235e38, text = '3.4028235e+38' },
+  { value = 0.000001, text = '0.000001' },
+  { value = 0.0000012345, text = '0.0000012345' },
+  { value = 0.00000012345, text = '1.2345e-7' },
+  { value = 1.5e-7, text = '1.5e-7' },
+  { value = 1e-7, text = '1e-7' },
+  { value = 9.5367431640625e-7, text = '9.536743e-7' },
+  { value = 1.17549435e-38, text = '1.1754944e-38' },
+  { value = 1e-45, text = '1e-45' },
+  { value = 5e-324, text = '0.0' },
+  { value = 1e39, text = 'null' },
+  { value = -1e39, text = 'null' },
+  { value = 0 / 0, text = 'null' },
+}
+
+--- Where this file is, from its chunk name: the folder the suite and its assets are in.
+local function here(): string
+  local source = debug.info(1, 's')
+  local path = if string.sub(source, 1, 1) == '@' or string.sub(source, 1, 1) == '='
+    then string.sub(source, 2)
+    else source
+  return string.match(path, '^(.*)/[^/]*$') or '.'
+end
+
+local function file(name: string): string
+  return buffer.tostring(assert(jess.fs.readBuffer(`{here()}/{name}`), `{name} is missing`))
+end
+
+--- Holds `actual` to `expected` by length and digest before the bytes, so a miss says something
+--- shorter than both.
+local function same(actual: string, expected: string)
+  expect(#actual).toBe(#expected)
+  expect(bytes.sha256(actual)).toBe(bytes.sha256(expected))
+  expect(actual == expected).toBe(true)
+end
+
+local function pinned(actual: string, pin: { size: number, digest: string })
+  expect(#actual).toBe(pin.size)
+  expect(bytes.sha256(actual)).toBe(pin.digest)
+end
+
+local function saved(plugin: tes3.Plugin): string return buffer.tostring(plugin:save()) end
+
+local function global(id: string, value: any): Record
+  return { type = 'GlobalVariable', flags = '', id = id, value = { type = 'Float', data = value } }
+end
+
+local function setting(text: string): Record
+  return { type = 'GameSetting', flags = '', id = 's', value = { type = 'String', data = text } }
+end
+
+--- Twenty thousand f32 values of every size, the same every time: bit patterns from a
+--- Park-Miller sequence, which stays exact in doubles.
+local function floats(): { number }
+  local scratch = buffer.create(4)
+  local values: { number } = {}
+  local state = 20260411
+
+  local function draw(): number
+    state = (state * 48271) % 2147483647
+    return state
+  end
+
+  while #values < 20000 do
+    buffer.writeu32(scratch, 0, (draw() % 65536) * 65536 + draw() % 65536)
+    local value = buffer.readf32(scratch, 0)
+
+    -- Every third value is drawn from the sizes game data has instead: a coordinate, an angle.
+    if #values % 3 == 0 then
+      buffer.writef32(scratch, 0, (draw() / 2147483647 - 0.5) * 10 ^ (draw() % 12 - 5))
+      value = buffer.readf32(scratch, 0)
+    end
+
+    if value == value and math.abs(value) ~= math.huge then table.insert(values, value) end
+  end
+
+  return values
+end
+
+--- The plugin tes3conv was given `floats()` in: a header, and a global for each.
+local function floatRecords(): { Record }
+  local records: { Record } = {
+    {
+      type = 'Header',
+      flags = '',
+      version = 1.3,
+      fileType = 'Esp',
+      author = '',
+      description = '',
+      numObjects = 20000,
+      masters = {},
+    },
+  }
+
+  for index, value in floats() do
+    table.insert(records, global(string.format('g%05d', index), value))
+  end
+
+  return records
+end
+
+suite.describe('encode', function()
+  suite.it('writes the sample as tes3conv does, indented and compact', function()
+    local records = tes3conv.sort(tes3conv.decode(file 'golden/sample.json'))
+    same(tes3conv.encode(records), file 'golden/sample.pretty.json')
+    same(tes3conv.encode(records, Compact), file 'golden/sample.compact.json')
+    same(tes3conv.encode(records, { compact = false }), file 'golden/sample.pretty.json')
+  end)
+
+  suite.it('writes records in the order given', function()
+    local static: Record = { type = 'Static', flags = '', id = 'zeta', mesh = 'z.nif' }
+    local first: Record = { type = 'Static', flags = '', id = 'alpha', mesh = 'a.nif' }
+    expect(tes3conv.encode({ static, first }, Compact)).toBe '[{"type":"Static","flags":"","id":"zeta","mesh":"z.nif"},{"type":"Static","flags":"","id":"alpha","mesh":"a.nif"}]'
+    expect(tes3conv.encode { static }).toBe '[\n  {\n    "type": "Static",\n    "flags": "",\n    "id": "zeta",\n    "mesh": "z.nif"\n  }\n]'
+  end)
+
+  suite.it('writes no records as an empty array, and ends nothing with a newline', function()
+    expect(tes3conv.encode {}).toBe '[]'
+    expect(tes3conv.encode({}, Compact)).toBe '[]'
+  end)
+
+  suite.it(
+    'keeps one reference per master and index, the last given, in tes3conv\'s order',
+    function()
+      local records: { Record } = tes3conv.decode(file 'golden/sample.json')
+      local cell = records[11]
+      local given = cell.references
+      expect(#given).toBe(6)
+      local written: { Record } = tes3conv.decode(tes3conv.encode { cell })
+      local order = {}
+
+      for _, reference in written[1].references do
+        table.insert(order, reference.id)
+      end
+
+      expect(order).toEqual { 'p', 'door', 'm', 'a', 'dup' }
+      expect(cell.references).toBe(given)
+      expect(#given).toBe(6)
+      expect(given[1].id).toBe 'b'
+    end
+  )
+
+  suite.it('leaves out the fields a record doesn\'t have', function()
+    local reference: Record = {
+      mastIndex = 0,
+      refrIndex = 1,
+      id = 'crate',
+      temporary = true,
+      translation = { 0, 0, 0 },
+      rotation = { 0, 0, 0 },
+    }
+
+    local cell: Record = {
+      type = 'Cell',
+      flags = '',
+      name = 'Hangar',
+      data = { flags = 'IS_INTERIOR', grid = { 0, 0 } },
+      references = { reference },
+    }
+
+    local bare ='[{"type":"Cell","flags":"","name":"Hangar","data":{"flags":"IS_INTERIOR","grid":[0,0]},"references":[{"mast_index":0,"refr_index":1,"id":"crate","temporary":true,"translation":[0.0,0.0,0.0],"rotation":[0.0,0.0,0.0]}]}]'
+    expect(tes3conv.encode({ cell }, Compact)).toBe(bare)
+    cell.region = 'Docks'
+    cell.mapColor = { 1, 2, 3, 0 }
+    reference.scale = 2
+    reference.movedCell = { -1, 4 }
+    reference.deleted = true
+    expect(tes3conv.encode({ cell }, Compact)).toBe '[{"type":"Cell","flags":"","name":"Hangar","data":{"flags":"IS_INTERIOR","grid":[0,0]},"region":"Docks","map_color":[1,2,3,0],"references":[{"mast_index":0,"refr_index":1,"id":"crate","temporary":true,"translation":[0.0,0.0,0.0],"rotation":[0.0,0.0,0.0],"scale":2.0,"moved_cell":[-1,4],"deleted":true}]}]'
+  end)
+
+  suite.it('reads a record decode left unread before it writes it', function()
+    local records = tes3conv.sort(tes3conv.decode(file 'golden/sample.pretty.json', {
+      lazy = { Cell = true, Static = true },
+    }))
+    expect(tes3conv.isLazy(records[5])).toBe(true)
+    same(tes3conv.encode(records, Compact), file 'golden/sample.compact.json')
+    expect(tes3conv.isLazy(records[5])).toBe(false)
+  end)
+
+  suite.it('writes a file', function()
+    local scratch = assert(rawget(_G, 'scratchRoot') :: string?, 'the case needs a scratchRoot')
+    local path = jess.fs.join(scratch, 'tes3conv-written.json')
+    local records = tes3conv.sort(tes3conv.decode(file 'golden/sample.json'))
+    tes3conv.write(path, records, Compact)
+    same(assert(jess.fs.read(path)), file 'golden/sample.compact.json')
+    tes3conv.write(path, records)
+    same(assert(jess.fs.read(path)), file 'golden/sample.pretty.json')
+  end)
+end)
+
+suite.describe('numbers', function()
+  suite.it('spells a float as tes3conv spells an f32', function()
+    for _, spelling in Spellings do
+      local text = tes3conv.encode({ global('g', spelling.value) }, Compact)
+      expect(text).toBe(`[\{"type":"GlobalVariable","flags":"","id":"g","value":\{"type":"Float","data":{spelling.text}}}]`)
+    end
+  end)
+
+  suite.it('writes null for the float a document gave as null', function()
+    local records: { Record } = tes3conv.decode '[{"type":"GlobalVariable","flags":"","id":"g","value":{"type":"Float","data":null}}]'
+    expect(records[1].value.data).toBe(jess.null)
+    expect(tes3conv.encode(records, Compact)).toBe '[{"type":"GlobalVariable","flags":"","id":"g","value":{"type":"Float","data":null}}]'
+  end)
+
+  suite.it('spells twenty thousand floats as tes3conv does, in both forms', function()
+    local records = floatRecords()
+    pinned(tes3conv.encode(records, Compact), FloatsCompact)
+    pinned(tes3conv.encode(records), FloatsPretty)
+  end)
+
+  suite.it('writes an integer whole, whatever its size', function()
+    local header: Record = {
+      type = 'Header',
+      flags = '',
+      version = 1.3,
+      fileType = 'Esp',
+      author = '',
+      description = '',
+      numObjects = 4096,
+      masters = { { 'a.esm', 0 }, { 'b.esm', 9007199254740991 }, { 'c.esm', 4294967296 } },
+    }
+    expect(tes3conv.encode({ header }, Compact)).toBe '[{"type":"Header","flags":"","version":1.3,"file_type":"Esp","author":"","description":"","num_objects":4096,"masters":[["a.esm",0],["b.esm",9007199254740991],["c.esm",4294967296]]}]'
+    local setting: Record =
+      { type = 'GameSetting', flags = '', id = 'i', value = { type = 'Integer', data = -2147483648 } }
+    expect(tes3conv.encode({ setting }, Compact)).toBe '[{"type":"GameSetting","flags":"","id":"i","value":{"type":"Integer","data":-2147483648}}]'
+  end)
+end)
+
+suite.describe('text', function()
+  suite.it('escapes what serde_json escapes, and nothing else', function()
+    local text = 'a\1b\31c\127d\u{e9}\u{2019}e"\\/\b\f\n\r\t'
+    expect(tes3conv.encode({ setting(text) }, Compact)).toBe '[{"type":"GameSetting","flags":"","id":"s","value":{"type":"String","data":"a\\u0001b\\u001fc\127d\u{e9}\u{2019}e\\"\\\\/\\b\\f\\n\\r\\t"}}]'
+  end)
+
+  suite.it('escapes every control character, NUL among them', function()
+    local controls = {}
+
+    for code = 0, 31 do
+      table.insert(controls, string.char(code))
+    end
+
+    local escaped = '\\u0000\\u0001\\u0002\\u0003\\u0004\\u0005\\u0006\\u0007\\b\\t\\n\\u000b\\f\\r\\u000e\\u000f\\u0010\\u0011\\u0012\\u0013\\u0014\\u0015\\u0016\\u0017\\u0018\\u0019\\u001a\\u001b\\u001c\\u001d\\u001e\\u001f'
+    local written = tes3conv.encode({ setting(table.concat(controls)) }, Compact)
+    expect(written).toBe(`[\{"type":"GameSetting","flags":"","id":"s","value":\{"type":"String","data":"{escaped}"}}]`)
+    local back: { Record } = tes3conv.decode(written)
+    expect(back[1].value.data).toBe(table.concat(controls))
+  end)
+
+  suite.it('writes the same text the same way however often it comes up', function()
+    local records = {}
+
+    for _ = 1, 3 do
+      table.insert(records, setting 'plain')
+      table.insert(records, setting 'q"uote')
+    end
+
+    local plain = '{"type":"GameSetting","flags":"","id":"s","value":{"type":"String","data":"plain"}}'
+    local quoted = '{"type":"GameSetting","flags":"","id":"s","value":{"type":"String","data":"q\\"uote"}}'
+    expect(tes3conv.encode(records, Compact)).toBe(`[{plain},{quoted},{plain},{quoted},{plain},{quoted}]`)
+  end)
+end)
+
+suite.describe('refusals', function()
+  suite.it('refuses a record type tes3conv has none of', function()
+    expect(function() tes3conv.encode { { type = 'Starship', id = 'x' } } end).toThrow '\'Starship\' isn\'t a record type tes3conv writes'
+    expect(function() tes3conv.encode { { id = 'x' } } end).toThrow 'isn\'t a record type tes3conv writes'
+  end)
+
+  suite.it('names the record a value can\'t be written in', function()
+    expect(function() tes3conv.encode { global('gFraction', 'much') } end).toThrow 'GlobalVariable \'gFraction\': expected a number, got string'
+    local fraction: Record =
+      { type = 'LandscapeTexture', flags = '', id = 'sand', index = 2.5, fileName = 'sand.dds' }
+    expect(function() tes3conv.encode { fraction } end).toThrow 'LandscapeTexture \'sand\': expected a whole number, got 2.5'
+    local untyped: Record = { type = 'GameSetting', flags = '', id = 'sName', value = { data = 1 } }
+    expect(function() tes3conv.encode { untyped } end).toThrow 'GameSetting \'sName\': \'nil\' isn\'t a type the value can have'
+    local flat: Record = { type = 'Sound', flags = '', id = 'bang', soundPath = 'b.wav', data = 3 }
+    expect(function() tes3conv.encode { flat } end).toThrow 'Sound \'bang\': expected a table, got number'
+  end)
+
+  suite.it('writes what follows a refusal as if it hadn\'t happened', function()
+    expect(function() tes3conv.encode { global('g', 'much') } end).toThrow 'expected a number'
+    expect(tes3conv.encode({ global('g', 1) }, Compact)).toBe '[{"type":"GlobalVariable","flags":"","id":"g","value":{"type":"Float","data":1.0}}]'
+  end)
+
+  suite.it('refuses a cell reference with no place in the cell', function()
+    local cell: Record = {
+      type = 'Cell',
+      flags = '',
+      name = 'Hangar',
+      data = { flags = 'IS_INTERIOR', grid = { 0, 0 } },
+      references = { { id = 'crate' } },
+    }
+    expect(function() tes3conv.encode { cell } end).toThrow 'a reference of cell \'Hangar\' has no mast_index or refr_index'
+  end)
+end)
+
+suite.describe('every type', function()
+  suite.it('writes the every-type plugin as tes3conv does, indented and compact', function()
+    local plugin = tes3.open(file 'assets/all_types.esp')
+    local records = tes3conv.records(plugin)
+    same(tes3conv.encode(records), file 'golden/all_types.json')
+    same(tes3conv.encode(records, Compact), file 'golden/all_types.compact.json')
+  end)
+
+  suite.it('transcribes it record by record to the same text', function()
+    local plugin = tes3.open(file 'assets/all_types.esp')
+    same(tes3conv.transcribe(plugin), file 'golden/all_types.json')
+    same(tes3conv.transcribe(plugin, Compact), file 'golden/all_types.compact.json')
+  end)
+
+  suite.it('writes what it reads back from either form as the same text', function()
+    local pretty, compact = file 'golden/all_types.json', file 'golden/all_types.compact.json'
+    same(tes3conv.encode(tes3conv.decode(pretty), Compact), compact)
+    same(tes3conv.encode(tes3conv.decode(compact)), pretty)
+  end)
+
+  suite.it('writes the plugin tes3conv read back as its text', function()
+    local plugin = tes3.open(file 'golden/sample.esp')
+    same(tes3conv.transcribe(plugin, Compact), file 'golden/sample.esp.compact.json')
+    same(tes3conv.encode(tes3conv.records(plugin), Compact), file 'golden/sample.esp.compact.json')
+  end)
+end)
+
+suite.describe('compile', function()
+  suite.it('compiles tes3conv\'s text of the every-type plugin back into it', function()
+    local source = file 'assets/all_types.esp'
+    same(saved(tes3conv.compile(tes3conv.decode(file 'golden/all_types.json'), 'all_types.esp')), source)
+    same(saved(tes3conv.compile(tes3conv.decode(file 'golden/all_types.compact.json'), 'x.esp')), source)
+  end)
+
+  suite.it(
+    'compiles the sample as tes3conv does: sorted, counted, one reference per place',
+    function()
+      local records = tes3conv.decode(file 'golden/sample.json')
+      same(saved(tes3conv.compile(records, 'sample.esp')), file 'golden/sample.esp')
+      same(saved(tes3conv.compile(records, 'some folder/SAMPLE.ESP')), file 'golden/sample.esp')
+      expect((records[3] :: Record).numObjects).toBe(99)
+      expect((records[1] :: Record).type).toBe 'Dialogue'
+    end
+  )
+
+  suite.it('gives the header the file type an .esp or .esm name stands for', function()
+    local records = tes3conv.decode(file 'golden/sample.json')
+    local master = file 'golden/sample.esm'
+    same(saved(tes3conv.compile(records, 'sample.esm')), master)
+    same(saved(tes3conv.compile(records, 'Sample.Esm')), master)
+    -- The sample's header says Esm, and under any other name it still does.
+    same(saved(tes3conv.compile(records, 'sample.omwaddon')), master)
+    same(saved(tes3conv.compile(records, 'sample.esp.bak')), master)
+    same(saved(tes3conv.compile(records)), master)
+    local header = tes3.open(saved(tes3conv.compile(records, 'sample.esp'))):header()
+    expect(header.fileType).toBe 'plugin'
+    expect(header.recordCount).toBe(11)
+    expect(tes3.open(master):header().fileType).toBe 'master'
+  end)
+
+  suite.it('compiles twenty thousand floats as tes3conv does', function()
+    pinned(saved(tes3conv.compile(floatRecords(), 'floats.esp')), FloatsPlugin)
+  end)
+
+  suite.it('refuses records with no header', function()
+    local static: Record = { type = 'Static', flags = '', id = 'zeta', mesh = 'z.nif' }
+    expect(function() tes3conv.compile({ static }, 'x.esp') end).toThrow 'tes3conv.plugin: records must start with a Header'
+    expect(function() tes3conv.compile({}, 'x.esp') end).toThrow 'tes3conv.plugin: records must start with a Header'
+  end)
+end)
+
+return suite
