@@ -115,10 +115,11 @@ for depth = 0, MaxDepth do
   TypeOpens[depth] = inner .. '"type": "'
 end
 
--- The size of the buffer, and so of the largest chunk a sink is handed, a megabyte.
+-- The size of the buffer, and so of the largest chunk a sink is handed, a megabyte. The buffer
+-- is made when something is first written: requiring the package costs nobody a megabyte.
 local Capacity = 1048576
 
-local out = buffer.create(Capacity)
+local out = buffer.create(0)
 local used = 0
 
 local function nowhere(_chunk: buffer, _length: number) end
@@ -710,6 +711,8 @@ end
 
 --- Starts writing: every chunk from here to `close` goes to `sink`.
 local function open(sink: Sink)
+  if buffer.len(out) < Capacity then out = buffer.create(Capacity) end
+
   used = 0
   current = nil
   send = sink
