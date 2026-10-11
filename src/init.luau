@@ -296,9 +296,9 @@ tes3conv.isPersistent = persistent
 -- index, then the plugin's own by index. The package encoder writes them in this order too.
 function tes3conv.sortReferences(references: { Table })
   table.sort(references, function(left, right)
-    local a, b = persistent(left), persistent(right)
+    local leftPersistent, rightPersistent = persistent(left), persistent(right)
 
-    if a ~= b then return a end
+    if leftPersistent ~= rightPersistent then return leftPersistent end
 
     local leftMaster, rightMaster = left.mastIndex :: number, right.mastIndex :: number
     leftMaster = if leftMaster == 0 then math.huge else leftMaster
