@@ -10,6 +10,10 @@ written into a plugin the way tes3conv writes them.
   prepare(record)         the record as tes3conv's encoder would write it, ready for core.encode
   plugin(records)         a new raw-preserving package plugin holding the records, header first
   records(plugin)         a package plugin's records as the tables tes3conv would have read
+  encode(records, options?)       the records as tes3conv's JSON text, byte for byte
+  write(path, records, options?)  the same, into a file
+  transcribe(plugin, options?)    a plugin as that text, one record at a time
+  transcribeTo(source, sink, options?)  a plugin or a document as that text, streamed
 
 Records come out as `plugin:decode(index)` spells them: a `type` field holding the type name, and
 camelCase field names (`speaker_id` is `speakerId`). Values are left as tes3conv wrote them: flags
@@ -24,8 +28,27 @@ tes3conv 0.4.1 writes every string NUL-terminated and leaves out an object count
 plugin's own references. jess writes the text fields Morrowind.esm leaves unterminated as they
 are, and keeps every count, so `prepare` adds the terminators and drops the counts tes3conv
 would: what `plugin` builds is byte for byte what tes3conv would compile from the same JSON.
+
+`encode` is the other direction's text: `encode(records(plugin))` is byte for byte what
+`tes3conv plugin.esp plugin.json` writes, and with `options.compact` what `tes3conv -c` writes.
+Fields come out in tes3conv's order, floats as it spells an f32 (`3.0`, `1e+16`), a cell's
+references one per master and index in the order it sorts them, and nothing ends the text:
+tes3conv writes no final newline. Records are written in the order given, as `plugin` writes
+them, with camelCase keys, as `decode` gives them without `rawKeys`. Values are written as they
+are spelled: tes3conv, which reads a document into numbers before it writes one, would respell
+flags given in another order (`DELETED | PERSISTENT`), and `encode` doesn't.
+
+Everything above works on values in memory, and a master's records as tables are several times
+the master. `transcribeTo` is the same conversion for a whole file, which never holds them: the
+source is a plugin or a document, each record is read, written, and let go, and the output is
+handed to a sink a chunk of at most a megabyte at a time. A document is its text, or a `Text`,
+which reads it a stretch at a time from wherever it is, so that it need not be held either. What
+it holds is a plugin's bytes, whole (`@tes3` opens a plugin from all of it), or a quarter
+megabyte of a document at a time; where each record is and the id tes3conv's order goes by; one
+record's tables; and one chunk. Its output is byte for byte `encode`'s.
 ]]
 
+local Encode = require '@self/encode'
 local tes3 = require '@self/records'
 local core = require '@tes3'
 
@@ -34,6 +57,17 @@ type Value = tes3.Value
 type Records = tes3.Records
 
 export type Options = { lazy: { [string]: boolean }?, rawKeys: boolean? }
+
+--- `compact` leaves out the indentation, as `tes3conv --compact` does.
+export type EncodeOptions = { compact: boolean? }
+
+--- Takes the next `length` bytes of what `transcribeTo` writes: the first `length` of `chunk`,
+--- which is written over once the sink returns.
+export type Sink = Encode.Sink
+
+--- Text too long to hold, read a stretch at a time: its length in bytes, and the `length` bytes
+--- after its first `offset`. A file's contents, or anything else that can be read in the middle.
+export type Text = { size: number, read: (offset: number, length: number) -> string }
 
 local tes3conv = {}
 
@@ -293,23 +327,24 @@ end
 
 tes3conv.isPersistent = persistent
 
+-- Whether `left` goes before `right` in the order tes3 writes references.
+local function before(left: Table, right: Table): boolean
+  local leftPersistent, rightPersistent = persistent(left), persistent(right)
+
+  if leftPersistent ~= rightPersistent then return leftPersistent end
+
+  local leftMaster, rightMaster = left.mastIndex :: number, right.mastIndex :: number
+  leftMaster = if leftMaster == 0 then math.huge else leftMaster
+  rightMaster = if rightMaster == 0 then math.huge else rightMaster
+
+  if leftMaster ~= rightMaster then return leftMaster < rightMaster end
+
+  return (left.refrIndex :: number) < (right.refrIndex :: number)
+end
+
 -- References in the order tes3 writes them: persistent first, then the masters' by master and
 -- index, then the plugin's own by index. The package encoder writes them in this order too.
-function tes3conv.sortReferences(references: { Table })
-  table.sort(references, function(left, right)
-    local leftPersistent, rightPersistent = persistent(left), persistent(right)
-
-    if leftPersistent ~= rightPersistent then return leftPersistent end
-
-    local leftMaster, rightMaster = left.mastIndex :: number, right.mastIndex :: number
-    leftMaster = if leftMaster == 0 then math.huge else leftMaster
-    rightMaster = if rightMaster == 0 then math.huge else rightMaster
-
-    if leftMaster ~= rightMaster then return leftMaster < rightMaster end
-
-    return (left.refrIndex :: number) < (right.refrIndex :: number)
-  end)
-end
+function tes3conv.sortReferences(references: { Table }) table.sort(references, before) end
 
 -- tes3conv sorts a plugin's records before it writes them (see `sort`).
 function tes3conv.sort(records: Records): Records
@@ -344,30 +379,34 @@ local function truncated(text: Value?): Value?
   return text
 end
 
+-- The record at `index` of a plugin as tes3conv would have read it.
+local function recordAt(plugin: core.Plugin, index: number): Table
+  local decoded = plugin:decode(index)
+  if not decoded then
+    error(`record {index} ({plugin:tag(index)}) has a record type tes3conv can't read`)
+  end
+
+  local value = (decoded :: unknown) :: Table
+  local field = ExactText[value.type :: string]
+
+  if field then
+    value[field] = truncated(value[field]) :: Value
+  elseif value.type == 'GameSetting' then
+    local setting = value.value :: Table
+
+    if setting.type == 'String' then setting.data = truncated(setting.data) :: Value end
+  end
+
+  return value
+end
+
 -- A plugin's records as `tes3conv plugin.esp plugin.json` reads them, sorted as it sorts them,
 -- and each record's bytes in the same order.
 function tes3conv.recordsWithBytes(plugin: core.Plugin): (Records, { string })
   local records: Records, bytes: { string } = {}, {}
 
   for index = 0, plugin:count() - 1 do
-    local decoded = plugin:decode(index)
-    if not decoded then
-      error(`record {index} ({plugin:tag(index)}) has a record type tes3conv can't read`)
-    end
-
-    local value = (decoded :: unknown) :: Table
-
-    local field = ExactText[value.type :: string]
-
-    if field then
-      value[field] = truncated(value[field]) :: Value
-    elseif value.type == 'GameSetting' then
-      local setting = value.value :: Table
-
-      if setting.type == 'String' then setting.data = truncated(setting.data) :: Value end
-    end
-
-    table.insert(records, value)
+    table.insert(records, recordAt(plugin, index))
     table.insert(bytes, buffer.tostring(plugin:bytes(index)))
   end
 
@@ -382,5 +421,327 @@ function tes3conv.recordsWithBytes(plugin: core.Plugin): (Records, { string })
 end
 
 function tes3conv.records(plugin: core.Plugin): Records return (tes3conv.recordsWithBytes(plugin)) end
+
+-- A cell as tes3conv holds it once read: its references keyed by master and index, so the last
+-- given with a pair is the one kept, in the order it writes them. The cell itself when its
+-- references already are, as a plugin's are.
+local function settled(cell: Table): Table
+  local references = cell.references :: { Table }?
+
+  if not references then return cell end
+
+  local unique: { Table } = {}
+  local positions: { [number]: number } = {}
+  local tidy = true
+
+  for index, reference in references do
+    local master, own = reference.mastIndex, reference.refrIndex
+
+    if type(master) ~= 'number' or type(own) ~= 'number' then
+      error(`a reference of cell '{cell.name}' has no mast_index or refr_index`, 0)
+    end
+
+    local key = master * 16777216 + own
+    local position = positions[key]
+
+    if position then
+      tidy = false
+    else
+      position = #unique + 1
+      positions[key] = position
+    end
+
+    unique[position] = reference
+
+    if index > 1 and not before(references[index - 1], reference) then tidy = false end
+  end
+
+  if tidy then return cell end
+
+  table.sort(unique, before)
+  local copy = table.clone(cell)
+  copy.references = unique
+  return copy
+end
+
+-- A sink that keeps what it is handed, and the pieces it has kept so far.
+local function keeper(): (Sink, { string })
+  local chunks: { string } = {}
+
+  return function(chunk: buffer, length: number)
+    table.insert(chunks, buffer.readstring(chunk, 0, length))
+  end,
+    chunks
+end
+
+-- The pieces a `keeper` kept as one string, put together in a buffer of its exact size: joining
+-- a master's worth any other way leaves several times the text behind in buffers outgrown on
+-- the way.
+local function joined(chunks: { string }): string
+  if #chunks == 1 then return chunks[1] end
+
+  local size = 0
+
+  for _, chunk in chunks do
+    size += #chunk
+  end
+
+  local whole = buffer.create(size)
+  local position = 0
+
+  for _, chunk in chunks do
+    buffer.writestring(whole, position, chunk)
+    position += #chunk
+  end
+
+  return buffer.tostring(whole)
+end
+
+-- The records as tes3conv's JSON text, in their order: `records` gives a plugin's as tes3conv
+-- writes them, and `sort` puts any others in that order. A record `decode` left unread is read.
+function tes3conv.encode(records: Records, options: EncodeOptions?): string
+  local sink, chunks = keeper()
+  Encode.open(sink)
+  Encode.begin(options ~= nil and options.compact == true)
+
+  for _, record in records do
+    tes3conv.realize(record)
+    Encode.record(if record.type == 'Cell' then settled(record) else record)
+  end
+
+  Encode.finish()
+  Encode.close()
+  return joined(chunks)
+end
+
+function tes3conv.write(path: string, records: Records, options: EncodeOptions?)
+  jess.fs.write(path, tes3conv.encode(records, options))
+end
+
+-- The record types whose place in tes3conv's order depends on nothing they hold (see
+-- `tes3.sortPermutation`). They are most of a master's bytes.
+local Unkeyed: { [string]: boolean } = {
+  Header = true,
+  Cell = true,
+  Landscape = true,
+  PathGrid = true,
+  Dialogue = true,
+  DialogueInfo = true,
+}
+
+-- Records to convert without holding them: how many there are, what places each in tes3conv's
+-- order (`keys`, in the order they were found), and a read of the one at a position.
+type Source = { count: number, keys: Records, read: (position: number) -> Table }
+
+-- What of a record places it in tes3conv's order.
+local function key(record: Table): Table
+  if Unkeyed[record.type :: string] then return { type = record.type } end
+
+  return {
+    type = record.type,
+    id = record.id,
+    index = record.index,
+    effectId = record.effectId,
+    skillId = record.skillId,
+  }
+end
+
+local function pluginSource(plugin: core.Plugin): Source
+  local count = plugin:count()
+  local keys: Records = table.create(count)
+
+  for index = 0, count - 1 do
+    local kind = core.typeName(plugin:tag(index))
+    keys[index + 1] = if kind and Unkeyed[kind] then { type = kind } else key(recordAt(plugin, index))
+  end
+
+  return {
+    count = count,
+    keys = keys,
+    read = function(position: number): Table return recordAt(plugin, position - 1) end,
+  }
+end
+
+-- How much of a document is looked through at a time.
+local Window = 262144
+
+local function inMemory(text: string): Text
+  return {
+    size = #text,
+    read = function(offset: number, length: number): string
+      return string.sub(text, offset + 1, offset + length)
+    end,
+  }
+end
+
+-- Where each record of a document is: the offset of its `{`, and its length. The document is
+-- stepped through a window at a time, looking only at its strings and brackets: nothing is
+-- read into tables, and no more than a window is held.
+local function spans(document: Text): ({ number }, { number })
+  local starts: { number }, lengths: { number } = {}, {}
+  local depth, offset = 0, 0
+  local quoted, escaped, closed = false, false, false
+
+  while offset < document.size and not closed do
+    local window = document.read(offset, Window)
+    local position = 1
+
+    -- A backslash that ended the last window escapes the character that starts this one.
+    if escaped then
+      position = 2
+      escaped = false
+    end
+
+    while position <= #window do
+      if quoted then
+        local at = string.find(window, '["\\]', position)
+        if not at then break end
+
+        quoted = string.byte(window, at) == 92
+        escaped = quoted and at == #window
+        position = if quoted then at + 2 else at + 1
+        continue
+      end
+
+      local at = string.find(window, '["{}%[%]]', position)
+
+      -- Outside the records there is only the array's own punctuation.
+      if depth < 2 then
+        local between = string.sub(window, position, if at then at - 1 else #window)
+        local expected = if depth == 0 then '^%s*$' else '^[%s,]*$'
+
+        if not string.find(between, expected) then
+          error(
+            if depth == 0
+              then 'a tes3conv plugin is a JSON array of records'
+              else `the document has something that isn't a record where record {#starts + 1} would be`,
+            0
+          )
+        end
+      end
+
+      if not at then break end
+
+      local byte = string.byte(window, at)
+      position = at + 1
+
+      if depth == 0 and byte ~= 91 then error('a tes3conv plugin is a JSON array of records', 0) end
+
+      if byte == 34 then
+        if depth < 2 then error(`record {#starts + 1} of the document isn't an object`, 0) end
+
+        quoted = true
+      elseif byte == 123 or byte == 91 then
+        if depth == 1 then
+          if byte ~= 123 then error(`record {#starts + 1} of the document isn't an object`, 0) end
+
+          table.insert(starts, offset + at - 1)
+        end
+
+        depth += 1
+      else
+        depth -= 1
+
+        if depth == 1 then
+          lengths[#starts] = offset + at - starts[#starts]
+        elseif depth <= 0 then
+          closed = true
+          break
+        end
+      end
+    end
+
+    offset += #window
+
+    if #window == 0 then break end
+  end
+
+  if closed then return starts, lengths end
+
+  if depth >= 2 then error(`the document ends inside record {#starts}`, 0) end
+
+  error(
+    if depth == 0
+      then 'a tes3conv plugin is a JSON array of records'
+      else 'the document ends without closing its array',
+    0
+  )
+end
+
+-- A document's records, unread: where each is in the text is all that is kept of them, with
+-- the keys that order them. A record's tables are made from its own stretch of the text when
+-- it is wanted, and let go.
+local function documentSource(document: Text): Source
+  local starts, lengths = spans(document)
+  local keys: Records = table.create(#starts)
+
+  for ordinal, start in starts do
+    local length = lengths[ordinal]
+    local kind = string.match(document.read(start, math.min(length, 64)), '^{%s*"type":%s*"(%w+)"')
+
+    if kind and Unkeyed[kind] then
+      keys[ordinal] = { type = kind }
+      continue
+    end
+
+    local record = parse(document.read(start, length), 1, false) :: Table
+
+    if type(record.type) ~= 'string' then error(`record {ordinal} of the document has no type`, 0) end
+
+    keys[ordinal] = key(record)
+  end
+
+  return {
+    count = #starts,
+    keys = keys,
+    read = function(place: number): Table
+      return parse(document.read(starts[place], lengths[place]), 1, false) :: Table
+    end,
+  }
+end
+
+local function sourceOf(source: core.Plugin | string | Text): Source
+  if type(source) == 'string' then return documentSource(inMemory(source)) end
+
+  -- A plugin has no `read` of its own; a text is its size and its `read`.
+  local fields = (source :: unknown) :: { [string]: unknown }
+
+  if type(rawget(fields, 'read')) == 'function' then return documentSource(source :: Text) end
+
+  return pluginSource(source :: core.Plugin)
+end
+
+-- Writes a plugin, or a tes3conv document, as the JSON text tes3conv writes for it, handing it to
+-- `sink` a chunk at a time, and returns how many records it wrote. A document is its text, or a
+-- `Text` that reads it a stretch at a time, which need never be held whole. Each record is read,
+-- written, and let go: what is held is the source, the keys that order its records, and one
+-- chunk. The chunk is at most a megabyte, and is only the bytes the sink is told of until the
+-- sink returns.
+function tes3conv.transcribeTo(
+  source: core.Plugin | string | Text,
+  sink: Sink,
+  options: EncodeOptions?
+): number
+  local from = sourceOf(source)
+  Encode.open(sink)
+  Encode.begin(options ~= nil and options.compact == true)
+
+  for _, position in tes3.sortPermutation(from.keys) do
+    local record = from.read(position)
+    Encode.record(if record.type == 'Cell' then settled(record) else record)
+  end
+
+  Encode.finish()
+  Encode.close()
+  return from.count
+end
+
+-- A plugin as the JSON text `tes3conv plugin.esp plugin.json` writes: `encode(records(plugin))`
+-- without holding every record at once, though the whole text is held to be returned.
+function tes3conv.transcribe(plugin: core.Plugin, options: EncodeOptions?): string
+  local sink, chunks = keeper()
+  tes3conv.transcribeTo(plugin, sink, options)
+  return joined(chunks)
+end
 
 return tes3conv

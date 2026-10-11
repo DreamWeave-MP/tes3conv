@@ -1,0 +1,781 @@
+--!strict
+--!native
+--[[
+Record tables as tes3conv's JSON text, byte for byte: serde_json's writer over the shapes in
+`./schema`, writing into one buffer of a fixed size that is handed to a sink whenever it fills.
+
+  open(sink)      start writing: every chunk goes to `sink(chunk, length)`
+  begin(compact)  start a document
+  record(value)   add a record to it
+  finish()        end the document
+  bytes(data)     add bytes as they are: a plugin's records go out through the same buffer
+  close()         hand over what is left, and let the sink go
+
+Nothing is built up on the way: digits, quotes, escapes, and indentation go into the buffer as
+they are worked out, so a document costs the buffer and the record being written, however long
+it is. The chunk a sink is handed is that buffer, and is only its first `length` bytes until the
+sink returns. One document is written at a time: a sink that writes another loses both.
+
+A document is a JSON array of records. Indented, every value of an object and every item of an
+array is on a line of its own, two spaces a level, a key and its value apart by `: `, and an
+empty array is `[]`; compact, there is no whitespace at all. Neither ends in a newline.
+
+An `f32` is written as the shortest decimal that reads back as the same `f32`, always with a
+fraction or an exponent: `3.0`, `0.1`, `1.5e-7`, `1e+16`. From 0.000001 up to 1e13 it is written
+out in full, and beyond either end with a signed exponent, as the zmij crate under serde_json
+1.0.150 spells it. A number no `f32` can hold, and NaN, is `null`. Integers are written whole.
+
+Text is escaped as serde_json escapes it: `"` and `\` with a backslash, the control characters
+below a space as `\b`, `\t`, `\n`, `\f`, `\r`, or `\u00xx`, and everything else, DEL and every
+character past ASCII included, as it is.
+]]
+
+local Schema = require './schema'
+
+type Node = Schema.Node
+type Value = boolean | number | string | JessNull | { [string | number]: Value }
+type Table = { [string | number]: Value }
+
+--- Takes the next `length` bytes of output, which are the first `length` of `chunk`. The chunk
+--- is written over once the sink returns.
+export type Sink = (chunk: buffer, length: number) -> ()
+
+--- A schema node made ready to write: its fields' names already quoted, with the punctuation
+--- that goes before each, and for indented text the same again at every depth it turns up at.
+type Plan = {
+  kind: 'plain' | 'float' | 'blob' | 'struct' | 'list' | 'tagged',
+  keys: { string },
+  names: { string },
+  plans: { Plan },
+  first: { string },
+  rest: { string },
+  firstAt: { [number]: { string } },
+  restAt: { [number]: { string } },
+  item: Plan?,
+  variants: { [string]: Plan },
+}
+
+-- What serde_json writes for each character it escapes.
+local Escapes: { [string]: string } = {
+  ['"'] = '\\"',
+  ['\\'] = '\\\\',
+  ['\b'] = '\\b',
+  ['\t'] = '\\t',
+  ['\n'] = '\\n',
+  ['\f'] = '\\f',
+  ['\r'] = '\\r',
+}
+
+for code = 0, 31 do
+  local character = string.char(code)
+  if not Escapes[character] then Escapes[character] = string.format('\\u%04x', code) end
+end
+
+-- The characters serde_json escapes.
+local Unsafe = '[%z\1-\31"\\]'
+
+-- `%.0e` to `%.8e`: an f32 never needs more than nine digits.
+local Precisions: { string } = {}
+
+for digits = 0, 8 do
+  Precisions[digits + 1] = `%.{digits}e`
+end
+
+-- The powers of ten a double holds exactly, from 10^0.
+local Powers: { [number]: number } = {}
+
+for power = 0, 22 do
+  Powers[power] = 10 ^ power
+end
+
+-- Runs of zeros, for the ones a float's digits are padded with.
+local Zeros: { [number]: string } = {}
+
+for count = 0, 13 do
+  Zeros[count] = string.rep('0', count)
+end
+
+-- No record nests deeper than a third of this.
+local MaxDepth = 24
+
+-- Indented text's punctuation at each depth: what opens a list and goes between its items, what
+-- closes a list and an object, and the `type` a tagged object starts with.
+local ListOpens: { string }, ListNexts: { string }, ListCloses: { string } = {}, {}, {}
+local ObjectCloses: { string }, TypeOpens: { string } = {}, {}
+local Breaks: { string } = {}
+
+for depth = 0, MaxDepth do
+  local inner = '\n' .. string.rep('  ', depth + 1)
+  local outer = '\n' .. string.rep('  ', depth)
+  Breaks[depth] = inner
+  ListOpens[depth] = '[' .. inner
+  ListNexts[depth] = ',' .. inner
+  ListCloses[depth] = outer .. ']'
+  ObjectCloses[depth] = outer .. '}'
+  TypeOpens[depth] = inner .. '"type": "'
+end
+
+-- The size of the buffer, and so of the largest chunk a sink is handed, a megabyte.
+local Capacity = 1048576
+
+local out = buffer.create(Capacity)
+local used = 0
+
+local function nowhere(_chunk: buffer, _length: number) end
+
+local send: Sink = nowhere
+local compact = false
+local records = 0
+
+-- The decimals of the floats the arithmetic below can't settle, which are few and come up
+-- again and again: one half, one quarter, and the other powers of two.
+local FloatCacheLimit = 4096
+
+local floatTexts: { [number]: string } = {}
+local floatCount = 0
+local scratch = buffer.create(4)
+
+-- Short text already found to need no escaping: a plugin names the same ids, flags, and enums
+-- over and over, and looking one up is cheaper than looking through it.
+local CleanLimit, CleanLength = 65536, 48
+
+local clean: { [string]: boolean } = {}
+local cleanCount = 0
+
+-- The record being written, for the message of a value that can't be.
+local current: Table? = nil
+
+local function fail(message: string): never
+  local record = current
+  if not record then error(message, 0) end
+
+  local id = record.id or record.name or record.cell
+  local named = if type(id) == 'string' and id ~= '' then ` '{id}'` else ''
+  error(`{record.type}{named}: {message}`, 0)
+end
+
+local function compile(node: Node, seen: { [Node]: Plan }): Plan
+  local known = seen[node]
+  if known then return known end
+
+  local plan: Plan = {
+    kind = node.kind,
+    keys = {},
+    names = {},
+    plans = {},
+    first = {},
+    rest = {},
+    firstAt = {},
+    restAt = {},
+    variants = {},
+  }
+  seen[node] = plan
+
+  for _, field in node.fields or {} do
+    table.insert(plan.keys, field.key)
+    table.insert(plan.names, field.name)
+    table.insert(plan.plans, compile(field.node, seen))
+    table.insert(plan.first, `"{field.name}":`)
+    table.insert(plan.rest, `,"{field.name}":`)
+  end
+
+  if node.item then plan.item = compile(node.item, seen) end
+
+  for name, variant in node.variants or {} do
+    plan.variants[name] = compile(variant, seen)
+  end
+
+  return plan
+end
+
+local Plans: { [string]: Plan } = {}
+
+do
+  local seen: { [Node]: Plan } = {}
+
+  for name, node in Schema.Records do
+    Plans[name] = compile(node, seen)
+  end
+end
+
+local function flush()
+  if used == 0 then return end
+
+  local length = used
+  used = 0
+  send(out, length)
+end
+
+--- Adds `text`, which goes out on its own when it is longer than the buffer.
+local function put(text: string)
+  local length = #text
+
+  if used + length > Capacity then
+    flush()
+
+    if length > Capacity then
+      send(buffer.fromstring(text), length)
+      return
+    end
+  end
+
+  buffer.writestring(out, used, text)
+  used += length
+end
+
+--- Adds a whole number from 0 to 2^53 in digits.
+local function digits(value: number)
+  local length, bound = 1, 10
+
+  while value >= bound do
+    length += 1
+    bound *= 10
+  end
+
+  if used + length > Capacity then flush() end
+
+  local position = used + length
+  used = position
+
+  repeat
+    position -= 1
+    buffer.writeu8(out, position, 48 + value % 10)
+    value //= 10
+  until value == 0
+end
+
+--- Adds the last `width` digits of a whole number, zeros in front where it has fewer.
+local function padded(value: number, width: number)
+  if used + width > Capacity then flush() end
+
+  local position = used + width
+  used = position
+
+  for _ = 1, width do
+    position -= 1
+    buffer.writeu8(out, position, 48 + value % 10)
+    value //= 10
+  end
+end
+
+local function single(value: number): number
+  buffer.writef32(scratch, 0, value)
+  return buffer.readf32(scratch, 0)
+end
+
+--- The decimal at `precision` that reads back as the positive f32 `value`, or nil when none
+--- does: the nearest one, or for a `lopsided` value its neighbor on the other side.
+local function candidate(value: number, precision: string, lopsided: boolean): string?
+  local text = string.format(precision, value)
+  local nearest = tonumber(text) :: number
+  if single(nearest) == value then return text end
+
+  if not lopsided then return nil end
+
+  local leading, following, power = string.match(text, '^(%d)%.?(%d*)e([-+]%d+)$')
+  local whole = tonumber(`{leading}{following}`) :: number
+  local scale = (tonumber(power) :: number) - #(following :: string)
+  local neighbor = string.format('%de%d', if nearest > value then whole - 1 else whole + 1, scale)
+  if single(tonumber(neighbor) :: number) == value then return neighbor end
+
+  return nil
+end
+
+--- The digits of the shortest decimal that reads back as the f32 `value`, which is positive, and
+--- the power of ten its first digit stands for: worked out through text, for the floats `short`
+--- leaves.
+local function shortest(value: number): (string, number)
+  -- A power of two is nearer the float below it than the one above, so the decimal nearest to
+  -- it at some length can fall outside what reads back as it while that decimal's neighbor on
+  -- the other side is inside. Its lengths are tried one by one.
+  local lopsided = math.frexp(value) == 0.5
+  local low, high = 1, #Precisions
+  local text: string? = nil
+
+  while lopsided and not text and low <= high do
+    text = candidate(value, Precisions[low], true)
+    low += 1
+  end
+
+  -- For every other float, once the nearest decimal of some length reads back, the nearest of
+  -- every greater length does: it is at least as near. So the shortest is found by halving.
+  while not lopsided and low < high do
+    local middle = (low + high) // 2
+    local found = candidate(value, Precisions[middle], false)
+
+    if found then
+      text = found
+      high = middle
+    else
+      low = middle + 1
+    end
+  end
+
+  -- Nine digits always read back, and are what is left when nothing shorter was found.
+  local settled = text or string.format(Precisions[high], value)
+  local mark = string.find(settled, 'e', 1, true) :: number
+  local mantissa = string.sub(settled, 1, mark - 1)
+  local exponent = tonumber(string.sub(settled, mark + 1)) :: number
+
+  -- `1.25e3` counts from its first digit already; `125e1` counts from its last.
+  if string.byte(mantissa, 2) == 46 then
+    mantissa = string.sub(mantissa, 1, 1) .. string.sub(mantissa, 3)
+  else
+    exponent += #mantissa - 1
+  end
+
+  if string.byte(mantissa, -1) == 48 then mantissa = string.gsub(mantissa, '0+$', '') end
+
+  return mantissa, exponent
+end
+
+--- A finite, positive f32 as zmij writes it, from its digits as text.
+local function spelled(value: number): string
+  local mantissa, exponent = shortest(value)
+  local count = #mantissa
+
+  if exponent < -6 or exponent > 12 then
+    local fraction = if count > 1 then '.' .. string.sub(mantissa, 2) else ''
+    local direction = if exponent < 0 then '-' else '+'
+    return `{string.sub(mantissa, 1, 1)}{fraction}e{direction}{math.abs(exponent)}`
+  end
+
+  if count - 1 <= exponent then return `{mantissa}{Zeros[exponent - count + 1]}.0` end
+
+  if exponent >= 0 then
+    return `{string.sub(mantissa, 1, exponent + 1)}.{string.sub(mantissa, exponent + 2)}`
+  end
+
+  return `0.{Zeros[-exponent - 1]}{mantissa}`
+end
+
+--- The whole number nearest `value` times ten to the `scale`, when it reads back as the f32
+--- `value` divided by the same: -1 when it doesn't, and -2 when `value` sits too near the middle
+--- of two whole numbers for a double to say which is nearer.
+local function rounded(value: number, scale: number): number
+  local scaled = if scale >= 0 then value * Powers[scale] else value / Powers[-scale]
+  local floor = math.floor(scaled)
+  local fraction = scaled - floor
+
+  -- The product is off by less than a tenth of this, having at most ten digits before the
+  -- point, so outside this band the nearer whole number is the one it looks like.
+  if math.abs(fraction - 0.5) < 1e-5 then return -2 end
+
+  local whole = if fraction > 0.5 then floor + 1 else floor
+  local back = if scale >= 0 then whole / Powers[scale] else whole * Powers[-scale]
+  return if single(back) == value then whole else -1
+end
+
+--- Adds a finite, positive f32 as zmij writes it, worked out in arithmetic and written digit by
+--- digit, so that a float costs no text; false when arithmetic can't settle it, with nothing
+--- added. A whole number of up to nine digits times or over a power of ten up to 10^22 is one
+--- exact step in doubles, the step that reads a decimal of that size, so what is tried here
+--- reads back exactly as the text of it would.
+local function short(value: number): boolean
+  local exponent = math.floor(math.log10(value))
+
+  -- Powers of two are lopsided (see `shortest`), and the powers of ten run out past these.
+  if exponent < -13 or exponent > 20 or math.frexp(value) == 0.5 then return false end
+
+  -- Halving, as `shortest` does: `high` digits read back whenever `whole` is set.
+  local low, high = 1, 9
+  local whole, scale = -1, 0
+
+  while low < high do
+    local middle = (low + high) // 2
+    local found = rounded(value, middle - 1 - exponent)
+
+    if found == -2 then return false end
+
+    if found >= 0 then
+      whole, scale = found, middle - 1 - exponent
+      high = middle
+    else
+      low = middle + 1
+    end
+  end
+
+  if whole < 0 then
+    whole, scale = rounded(value, 8 - exponent), 8 - exponent
+    if whole < 0 then return false end
+  end
+
+  -- The digits, without the zeros they end in, and the power of ten the first stands for.
+  while whole % 10 == 0 do
+    whole //= 10
+    scale -= 1
+  end
+
+  local count, bound = 1, 10
+
+  while whole >= bound do
+    count += 1
+    bound *= 10
+  end
+
+  local power = count - 1 - scale
+
+  if power < -6 or power > 12 then
+    digits(whole // Powers[count - 1])
+
+    if count > 1 then
+      put '.'
+      padded(whole, count - 1)
+    end
+
+    put(if power < 0 then 'e-' else 'e+')
+    digits(math.abs(power))
+  elseif count - 1 <= power then
+    digits(whole)
+    put(Zeros[power - count + 1])
+    put '.0'
+  elseif power >= 0 then
+    digits(whole // Powers[count - 1 - power])
+    put '.'
+    padded(whole, count - 1 - power)
+  else
+    put '0.'
+    put(Zeros[-power - 1])
+    digits(whole)
+  end
+
+  return true
+end
+
+--- Adds a float field's value as tes3conv writes an f32.
+local function float(value: Value)
+  if type(value) ~= 'number' then
+    if value ~= jess.null then fail(`expected a number, got {type(value)}`) end
+
+    put 'null'
+    return
+  end
+
+  -- Every whole number below 2^24 is an f32, and no shorter decimal reads back as it.
+  if value % 1 == 0 and value > -16777216 and value < 16777216 then
+    if value == 0 then
+      put(if 1 / value < 0 then '-0.0' else '0.0')
+      return
+    end
+
+    if value < 0 then put '-' end
+
+    digits(math.abs(value))
+    put '.0'
+    return
+  end
+
+  -- As serde reads a JSON number into an f32: the nearest one, or infinity past the last.
+  local narrowed = single(value)
+
+  if narrowed == 0 then
+    put(if value < 0 then '-0.0' else '0.0')
+    return
+  elseif narrowed ~= narrowed or math.abs(narrowed) == math.huge then
+    put 'null'
+    return
+  end
+
+  if narrowed < 0 then
+    put '-'
+    narrowed = -narrowed
+  end
+
+  if short(narrowed) then return end
+
+  local known = floatTexts[narrowed]
+
+  if not known then
+    known = spelled(narrowed)
+
+    if floatCount >= FloatCacheLimit then
+      table.clear(floatTexts)
+      floatCount = 0
+    end
+
+    floatTexts[narrowed] = known
+    floatCount += 1
+  end
+
+  put(known)
+end
+
+local function integer(value: number)
+  if value % 1 ~= 0 then fail(`expected a whole number, got {value}`) end
+
+  if value < 0 then
+    put '-'
+    value = -value
+  end
+
+  if value < 9007199254740992 then
+    digits(value)
+  else
+    put(string.format('%d', value))
+  end
+end
+
+--- Adds `text`, quoted and escaped.
+local function quote(text: string)
+  if not clean[text] then
+    if string.find(text, Unsafe) then
+      text = string.gsub(text, Unsafe, Escapes)
+    elseif #text <= CleanLength then
+      if cleanCount >= CleanLimit then
+        table.clear(clean)
+        cleanCount = 0
+      end
+
+      clean[text] = true
+      cleanCount += 1
+    end
+  end
+
+  local length = #text
+
+  if used + length + 2 > Capacity then
+    put '"'
+    put(text)
+    put '"'
+    return
+  end
+
+  buffer.writeu8(out, used, 34)
+  buffer.writestring(out, used + 1, text)
+  buffer.writeu8(out, used + length + 1, 34)
+  used += length + 2
+end
+
+--- Adds base64 `text`, quoted. Base64 has nothing to escape, so text that is only called base64
+--- and holds a quote or a backslash goes the long way.
+local function blob(value: Value)
+  if type(value) ~= 'string' then fail(`expected base64 text, got {type(value)}`) end
+
+  local text = value :: string
+
+  if string.find(text, '"', 1, true) or string.find(text, '\\', 1, true) then
+    quote(text)
+    return
+  end
+
+  put '"'
+  put(text)
+  put '"'
+end
+
+--- Adds a value the schema says nothing about: text, a boolean, an integer, or a list of them.
+local function plain(value: Value, depth: number)
+  local kind = type(value)
+
+  if kind == 'string' then
+    quote(value :: string)
+    return
+  elseif kind == 'number' then
+    integer(value :: number)
+    return
+  elseif kind == 'boolean' then
+    put(if value then 'true' else 'false')
+    return
+  elseif kind ~= 'table' then
+    if value ~= jess.null then fail(`expected a value, got {kind}`) end
+
+    put 'null'
+    return
+  end
+
+  local items = value :: { Value }
+  local length = #items
+
+  if length == 0 then
+    if next(items) ~= nil then fail 'expected a list, got a table with fields' end
+
+    put '[]'
+    return
+  end
+
+  if depth >= MaxDepth then fail 'lists nested too deeply' end
+
+  local opening = if compact then '[' else ListOpens[depth]
+  local separator = if compact then ',' else ListNexts[depth]
+
+  for index = 1, length do
+    put(if index == 1 then opening else separator)
+    plain(items[index], depth + 1)
+  end
+
+  put(if compact then ']' else ListCloses[depth])
+end
+
+--- The text before each field of `plan` at `depth` in indented text: before the first, and
+--- before each of the rest.
+local function prefixes(plan: Plan, depth: number): ({ string }, { string })
+  local first = plan.firstAt[depth]
+  if first then return first, plan.restAt[depth] end
+
+  local opened: { string } = table.create(#plan.names)
+  local continued: { string } = table.create(#plan.names)
+
+  for index, name in plan.names do
+    opened[index] = `{Breaks[depth]}"{name}": `
+    continued[index] = `,{Breaks[depth]}"{name}": `
+  end
+
+  plan.firstAt[depth] = opened
+  plan.restAt[depth] = continued
+  return opened, continued
+end
+
+local write: (plan: Plan, value: Value, depth: number) -> ()
+
+--- Adds the fields of `plan` that `value` has, after the `type` a tagged value starts with.
+local function fields(plan: Plan, value: Table, depth: number, tag: string?)
+  local first, rest = plan.first, plan.rest
+  if not compact then
+    first, rest = prefixes(plan, depth)
+  end
+
+  local started = false
+  put '{'
+
+  if tag then
+    put(if compact then '"type":"' else TypeOpens[depth])
+    put(tag)
+    put '"'
+    started = true
+  end
+
+  local plans = plan.plans
+
+  for index, key in plan.keys do
+    local item = value[key]
+    if item == nil then continue end
+
+    put(if started then rest[index] else first[index])
+    started = true
+    write(plans[index], item, depth + 1)
+  end
+
+  put(if compact or not started then '}' else ObjectCloses[depth])
+end
+
+function write(plan: Plan, value: Value, depth: number)
+  local kind = plan.kind
+
+  if kind == 'plain' then
+    plain(value, depth)
+    return
+  elseif kind == 'float' then
+    float(value)
+    return
+  elseif kind == 'blob' then
+    blob(value)
+    return
+  end
+
+  if type(value) ~= 'table' then fail(`expected a table, got {type(value)}`) end
+
+  local members = value :: Table
+
+  if kind == 'struct' then
+    fields(plan, members, depth, nil)
+    return
+  elseif kind == 'tagged' then
+    local tag = members.type
+    local variant = if type(tag) == 'string' then plan.variants[tag] else nil
+    if not variant then return fail(`'{tag}' isn't a type the value can have`) end
+
+    fields(variant, members, depth, tag :: string)
+    return
+  end
+
+  local items = value :: { Value }
+  local length = #items
+
+  if length == 0 then
+    put '[]'
+    return
+  end
+
+  local item = plan.item :: Plan
+  local opening = if compact then '[' else ListOpens[depth]
+  local separator = if compact then ',' else ListNexts[depth]
+
+  for index = 1, length do
+    put(if index == 1 then opening else separator)
+    write(item, items[index], depth + 1)
+  end
+
+  put(if compact then ']' else ListCloses[depth])
+end
+
+--- Starts writing: every chunk from here to `close` goes to `sink`.
+local function open(sink: Sink)
+  used = 0
+  current = nil
+  send = sink
+end
+
+--- Hands over what is left in the buffer, and lets the sink go.
+local function close()
+  flush()
+  send = nowhere
+end
+
+--- Adds bytes as they are.
+local function bytes(data: buffer)
+  local length = buffer.len(data)
+
+  if used + length > Capacity then
+    flush()
+
+    if length > Capacity then
+      send(data, length)
+      return
+    end
+  end
+
+  buffer.copy(out, used, data, 0, length)
+  used += length
+end
+
+--- Starts a document, indented unless `tight`.
+local function begin(tight: boolean)
+  compact = tight
+  records = 0
+end
+
+--- Adds a record to the document: indented, its lines after the first start two spaces in.
+local function record(value: Table)
+  local kind = value.type
+  local plan = if type(kind) == 'string' then Plans[kind] else nil
+  if not plan then error(`'{kind}' isn't a record type tes3conv writes`, 0) end
+
+  if records == 0 then
+    put(if compact then '[' else '[\n  ')
+  else
+    put(if compact then ',' else ',\n  ')
+  end
+
+  records += 1
+  current = value
+  fields(plan, value, 1, kind :: string)
+  current = nil
+end
+
+--- Ends the document.
+local function finish()
+  if records == 0 then
+    put '[]'
+  else
+    put(if compact then ']' else '\n]')
+  end
+end
+
+return table.freeze {
+  begin = begin,
+  bytes = bytes,
+  close = close,
+  finish = finish,
+  open = open,
+  record = record,
+}
