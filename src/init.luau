@@ -270,11 +270,11 @@ function tes3conv.prepare(record: Table): Table
       local copied: { Table } = table.clone(references)
 
       for index, reference in copied do
-        if reference.objectCount == 1 and reference.mastIndex == 0 then
-          local trimmed = table.clone(reference)
-          trimmed.objectCount = nil
-          copied[index] = trimmed
-        end
+        if reference.objectCount ~= 1 or reference.mastIndex ~= 0 then continue end
+
+        local trimmed = table.clone(reference)
+        trimmed.objectCount = nil
+        copied[index] = trimmed
       end
 
       tes3conv.sortReferences(copied)
