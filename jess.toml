@@ -21,11 +21,14 @@ tests = [
 # The tes3conv-shaped record helpers, exported for the packages that work on the same record
 # tables: merge-to-master, add-vanilla-refs, and starwind.
 "@tes3conv/records" = "src/records.luau"
+# The conversion as a request and a result, for a front end with no terminal.
+"@tes3conv/commands" = "src/commands.luau"
 
 # Every module here is inert API: it does nothing until something requires it, and runs with the
-# authority of whatever calls it.
+# authority of whatever calls it. `read`, `write`, and a conversion read and write files, so their
+# caller needs to.
 
 [[layer]]
 id = "tes3conv.core"
 requires = ["tes3.core"]
-exports = ["@tes3conv", "@tes3conv/records"]
+exports = ["@tes3conv", "@tes3conv/records", "@tes3conv/commands"]

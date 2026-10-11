@@ -1,0 +1,291 @@
+--!strict
+--!native
+--[[
+@tes3conv/commands: what the tes3conv program does between reading its arguments and printing.
+It takes one request, a table of plain data, and returns one result, a table of plain data:
+everything a person at a terminal would have been shown, and nothing worded or laid out for one.
+
+  convert(request)  a plugin as a JSON document, or a JSON document as a plugin
+  check(request)    why a request can't be carried out, found without converting anything
+  formatOf(path)    what a file of that name holds, going by its extension
+
+The input is read as what its first bytes say it is: `TES3` starts a plugin, `[` a JSON
+document. The output is written as what its name says it is: `.json` a JSON document, `.esp`,
+`.esm`, or `.omwaddon` a plugin. So a plugin named as a plugin is rewritten as tes3conv writes
+one, and a document named as a document is rewritten indented or compact. Either way the records
+come out in tes3conv's order.
+
+Without an output the converted text is JSON, whatever the input was, as the program prints it:
+it is handed to the request's `sink` a chunk at a time, or with no sink it comes back whole in
+the result's `bytes`, the one case in which the whole conversion is held in memory. With an
+output, the conversion is written beside it and moved over it once it is complete, so a
+conversion that fails leaves the output as it was; a file already there is first copied to
+`<name>.000.<extension>`, or the first of `.001` to `.999` that is free, unless `overwrite` says
+not to.
+
+Nothing here reads an argument list, the environment, or standard input, and nothing prints. A
+request that can't be carried out raises its reason as a string: an input that isn't there or
+isn't a plugin or a document, a record that can't be read or written, a thousand backups already
+kept. `convert` writes only when `dryRun` isn't set.
+
+A conversion holds a plugin's bytes, whole, or a quarter megabyte of a document at a time; where
+each record is; one record's tables; and a megabyte of output: see `@tes3conv`'s `transcribeTo`
+and `compileTo`. A document is read from its file as it is needed, never whole.
+]]
+
+local core = require '@tes3'
+local fs = require '@dream/fs'
+local tes3conv = require '@tes3conv'
+
+--- What a file holds: a TES3 plugin, or a tes3conv JSON document.
+export type Format = 'plugin' | 'json'
+
+export type Sink = tes3conv.Sink
+
+export type ConvertRequest = {
+  --- The file to convert.
+  input: string,
+  --- The file to write; its extension says what it is to hold.
+  output: string?,
+  --- JSON without indentation.
+  compact: boolean?,
+  --- Write over a file already at `output` without copying it first.
+  overwrite: boolean?,
+  --- Convert, and say what would be written and backed up, writing nothing.
+  dryRun: boolean?,
+  --- With no output: where the JSON goes, a chunk at a time. The chunk is only its first
+  --- `length` bytes, and only until the sink returns.
+  sink: Sink?,
+}
+
+--- `records` counts the header. `size` is the converted bytes' length. With `dryRun`, `output`
+--- and `backup` are the file that would have been written and the copy that would have been
+--- made. `bytes` is the converted JSON when the request named neither an output nor a sink.
+export type ConvertResult = {
+  command: 'convert',
+  input: string,
+  from: Format,
+  to: Format,
+  records: number,
+  size: number,
+  output: string?,
+  backup: string?,
+  bytes: string?,
+  dryRun: boolean,
+}
+
+local Formats: { [string]: Format } =
+  { esp = 'plugin', esm = 'plugin', omwaddon = 'plugin', json = 'json' }
+
+local Extensions = '.esp, .esm, .omwaddon, and .json'
+
+-- The name the conversion is written under until it is complete.
+local PartialSuffix = '.tes3conv-partial'
+
+--- A path's name without its last extension, and that extension; nil for a name with neither.
+local function split(path: string): (string?, string?)
+  local stem, extension = string.match(path, '^(.*[^/\\])%.([^./\\]+)$')
+  return stem, extension
+end
+
+--- What a file of that name holds, going by its extension without regard to case; nil for a
+--- name tes3conv neither reads nor writes.
+local function formatOf(path: string): Format?
+  local _, extension = split(path)
+  return if extension then Formats[string.lower(extension)] else nil
+end
+
+--- An error's message without the script position `error` puts in front of it, or the function
+--- and path `@dream/fs` does.
+local function reason(caught: unknown): string
+  local message = string.gsub(tostring(caught), '^[^\n]-:%d+: ', '')
+  return (string.gsub(message, '^dream%.fs%.%a+: ', ''))
+end
+
+--- Why the request can't be carried out, or nil when nothing known before converting stands in
+--- its way. No file is read and none is written.
+local function check(request: ConvertRequest): string?
+  local input, output = request.input, request.output
+
+  if not formatOf(input) then
+    return `'{input}' isn't a file tes3conv reads: it reads {Extensions} files`
+  end
+
+  local found = fs.stat(input)
+  if not found then return `'{input}' doesn't exist` end
+
+  if not found.isFile then return `'{input}' isn't a file` end
+
+  if not output then return nil end
+
+  if not formatOf(output) then
+    return `'{output}' isn't a file tes3conv writes: it writes {Extensions} files`
+  end
+
+  if request.sink then return 'a request names an output or a sink, not both' end
+
+  local there = fs.stat(output)
+  if there and not there.isFile then return `'{output}' is there already and isn't a file` end
+
+  local folder = jess.fs.parent(output)
+
+  if folder and folder ~= '' and not jess.fs.isDir(folder) then
+    return `'{folder}', the folder '{output}' goes in, doesn't exist`
+  end
+
+  return nil
+end
+
+--- The first free backup name for `output`, or nil when all thousand are taken.
+local function backupFor(output: string): string?
+  local stem, extension = split(output)
+
+  for number = 0, 999 do
+    local name = string.format('%s.%03d.%s', stem :: string, number, extension :: string)
+    if not fs.stat(name) then return name end
+  end
+
+  return nil
+end
+
+--- The input as `@tes3conv` converts it: an opened plugin, or a document read from its file a
+--- stretch at a time.
+local function source(input: string): (core.Plugin | tes3conv.Text, Format)
+  local head, unread = fs.readAt(input, 0, 4)
+  if not head then error(`'{input}' can't be read: {reason(unread)}`, 0) end
+
+  local start = buffer.tostring(head)
+
+  if string.sub(start, 1, 1) == '[' then
+    local found = fs.stat(input)
+    if not found then error(`'{input}' can't be read: it is gone`, 0) end
+
+    local document: tes3conv.Text = {
+      size = found.size,
+      read = function(offset: number, length: number): string
+        local stretch, failure = fs.readAt(input, offset, length)
+        if not stretch then error(`'{input}' can't be read: {reason(failure)}`, 0) end
+
+        return buffer.tostring(stretch)
+      end,
+    }
+
+    return document, 'json'
+  end
+
+  if start ~= 'TES3' then
+    error(`'{input}' is neither a TES3 plugin nor a tes3conv JSON document`, 0)
+  end
+
+  local data, failure = fs.readFile(input)
+  if not data then error(`'{input}' can't be read: {reason(failure)}`, 0) end
+
+  -- `core.open` raises on bytes that don't frame as records: a file cut short, a size that runs
+  -- past the end.
+  local framed, opened = pcall(core.open, data)
+  if not framed then error(`'{input}' can't be read as a plugin: {reason(opened)}`, 0) end
+
+  return opened, 'plugin'
+end
+
+--- Converts a plugin to a JSON document or a JSON document to a plugin, as the request says.
+local function convert(request: ConvertRequest): ConvertResult
+  local refusal = check(request)
+  if refusal then error(refusal, 0) end
+
+  local input, output = request.input, request.output
+  local from, kind = source(input)
+  local to: Format = if output then formatOf(output) :: Format else 'json'
+  local writing = output ~= nil and not request.dryRun
+  local partial = if output then output .. PartialSuffix else ''
+  local size = 0
+  local kept: { string }? = nil
+  local writer
+
+  if writing then
+    local opened, unopened = fs.openWrite(partial)
+    if not opened then error(`'{output}' can't be written: {reason(unopened)}`, 0) end
+
+    writer = opened
+  elseif not output and not request.sink then
+    kept = {}
+  end
+
+  local function sink(chunk: buffer, length: number)
+    size += length
+
+    if writer then
+      local wrote, unwritten = writer:write(chunk, 0, length)
+      if not wrote then error(`'{output}' can't be written: {reason(unwritten)}`, 0) end
+    elseif kept then
+      table.insert(kept, buffer.readstring(chunk, 0, length))
+    elseif request.sink and not output then
+      request.sink(chunk, length)
+    end
+  end
+
+  -- `transcribeTo` and `compileTo` raise on a record that can't be read (a document that isn't
+  -- JSON, a subrecord cut short) or written (a value of the wrong kind, text the plugin's code
+  -- page lacks), and the sink on a disk that can't take the output. What was written so far is
+  -- removed before the reason is raised again.
+  local converted, count = pcall(function(): number
+    if to == 'json' then return tes3conv.transcribeTo(from, sink, { compact = request.compact }) end
+
+    return tes3conv.compileTo(from, sink, output)
+  end)
+
+  if writer then writer:close() end
+
+  if not converted then
+    if writing then fs.remove(partial) end
+
+    error(`'{input}' can't be converted: {reason(count)}`, 0)
+  end
+
+  local backup: string? = nil
+
+  if output and not request.overwrite and fs.stat(output) then
+    backup = backupFor(output)
+
+    if not backup then
+      if writing then fs.remove(partial) end
+
+      error(`'{output}' can't be backed up: a thousand backups of it are kept already`, 0)
+    end
+  end
+
+  if writing then
+    local target = output :: string
+
+    if backup then
+      local copied, uncopied = fs.copy(target, backup)
+
+      if not copied then
+        fs.remove(partial)
+        error(`'{output}' can't be backed up: {reason(uncopied)}`, 0)
+      end
+    end
+
+    local moved, unmoved = fs.rename(partial, target)
+
+    if not moved then
+      fs.remove(partial)
+      error(`'{output}' can't be written: {reason(unmoved)}`, 0)
+    end
+  end
+
+  return {
+    command = 'convert',
+    input = input,
+    from = kind,
+    to = to,
+    records = count :: number,
+    size = size,
+    output = output,
+    backup = backup,
+    bytes = if kept then table.concat(kept) else nil,
+    dryRun = request.dryRun == true,
+  }
+end
+
+return table.freeze { check = check, convert = convert, formatOf = formatOf }
