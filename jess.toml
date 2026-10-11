@@ -12,6 +12,7 @@ tests = [
   "tests/encode.luau",
   "tests/stream.luau",
   "tests/commands.luau",
+  "tests/cli.luau",
   "tests/style.luau",
 ]
 

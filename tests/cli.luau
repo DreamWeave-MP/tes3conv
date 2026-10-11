@@ -1,0 +1,283 @@
+--!strict
+--!native
+-- `@tes3conv/cli`: the argument lists it reads into a request, the ones it refuses and why, what
+-- it prints for a result, and the exit status of each way a run can end. The flags and
+-- arguments are tes3conv 0.4.1's; its messages go to the suite's own standard error.
+local bytes = require '@dream/bytes'
+local cli = require '@tes3conv/cli'
+local commands = require '@tes3conv/commands'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+-- Each argument list `parse` reads, and the request it makes of it.
+local Read: { { argv: { string }, request: commands.ConvertRequest } } = {
+  { argv = { 'test.esp' }, request = { input = 'test.esp' } },
+  { argv = { 'test.esp', 'test.json' }, request = { input = 'test.esp', output = 'test.json' } },
+  { argv = { 'test.json', 'test.esp' }, request = { input = 'test.json', output = 'test.esp' } },
+  { argv = { '-c', 'test.esp' }, request = { input = 'test.esp', compact = true } },
+  { argv = { '--compact', 'test.esp' }, request = { input = 'test.esp', compact = true } },
+  {
+    argv = { '-o', 'test.esp', 'test.json' },
+    request = { input = 'test.esp', output = 'test.json', overwrite = true },
+  },
+  {
+    argv = { '--overwrite', 'test.esp', 'test.json' },
+    request = { input = 'test.esp', output = 'test.json', overwrite = true },
+  },
+  {
+    argv = { '-co', 'test.esp', 'test.json' },
+    request = { input = 'test.esp', output = 'test.json', compact = true, overwrite = true },
+  },
+  {
+    argv = { '-oc', 'test.esp', 'test.json' },
+    request = { input = 'test.esp', output = 'test.json', compact = true, overwrite = true },
+  },
+  {
+    argv = { 'test.esp', '--compact', 'test.json', '--overwrite' },
+    request = { input = 'test.esp', output = 'test.json', compact = true, overwrite = true },
+  },
+  -- After `--`, a dash starts a file's name.
+  {
+    argv = { '-c', '--', '-odd.esp', '--compact.json' },
+    request = { input = '-odd.esp', output = '--compact.json', compact = true },
+  },
+  -- The original takes an empty OUTPUT for none, and so a dash as OUTPUT for a file's name.
+  { argv = { 'test.esp', '' }, request = { input = 'test.esp' } },
+  { argv = { 'test.esp', '-' }, request = { input = 'test.esp', output = '-' } },
+  -- What a file holds is its to say, not its name's: `parse` touches no file.
+  { argv = { 'notes.txt', 'out.bin' }, request = { input = 'notes.txt', output = 'out.bin' } },
+  { argv = { 'Data Files/My Mod.ESP' }, request = { input = 'Data Files/My Mod.ESP' } },
+}
+
+-- Each argument list `parse` refuses, and what it says of it.
+local Refused: { { argv: { string }, message: string } } = {
+  { argv = {}, message = 'an input file is required' },
+  { argv = { '-c' }, message = 'an input file is required' },
+  { argv = { '--compact', '--overwrite' }, message = 'an input file is required' },
+  { argv = { '--' }, message = 'an input file is required' },
+  { argv = { 'a.esp', 'b.json', 'c.json' }, message = 'unexpected argument \'c.json\'' },
+  { argv = { '-x', 'a.esp' }, message = 'unknown option \'-x\'' },
+  { argv = { '-cx', 'a.esp' }, message = 'unknown option \'-x\'' },
+  { argv = { '-V' }, message = 'unknown option \'-V\'' },
+  { argv = { '--version' }, message = 'unknown option \'--version\'' },
+  { argv = { '--comp', 'a.esp' }, message = 'unknown option \'--comp\'' },
+  { argv = { '--Compact', 'a.esp' }, message = 'unknown option \'--Compact\'' },
+  { argv = { '--dry-run', 'a.esp' }, message = 'unknown option \'--dry-run\'' },
+  { argv = { '--output=b.json', 'a.esp' }, message = 'unknown option \'--output=b.json\'' },
+  { argv = { '--compact=true', 'a.esp' }, message = '--compact takes no value, not \'true\'' },
+  { argv = { '--overwrite=', 'a.esp' }, message = '--overwrite takes no value, not \'\'' },
+  { argv = { '-c', '-c', 'a.esp' }, message = '-c can be given only once' },
+  { argv = { '-cc', 'a.esp' }, message = '-c can be given only once' },
+  { argv = { '-c', 'a.esp', '--compact' }, message = '--compact can be given only once' },
+  { argv = { '--overwrite', '-o', 'a.esp' }, message = '-o can be given only once' },
+  {
+    argv = { '-' },
+    message = 'reading standard input (- as the input) is not part of this port: Jess gives a script nothing that reads it; name a file',
+  },
+  {
+    argv = { '-c', '-', 'out.json' },
+    message = 'reading standard input (- as the input) is not part of this port: Jess gives a script nothing that reads it; name a file',
+  },
+}
+
+-- The argument lists that ask for the usage, wherever the flag is.
+local Help: { { string } } = {
+  { '-h' },
+  { '--help' },
+  { 'a.esp', '--help' },
+  { '-ch', 'a.esp' },
+  { '-hx' },
+  { '--help', 'a', 'b', 'c' },
+}
+
+--- Where this file is, from its chunk name: the folder the suite and its assets are in.
+local function here(): string
+  local source = debug.info(1, 's')
+  local path = if string.sub(source, 1, 1) == '@' or string.sub(source, 1, 1) == '='
+    then string.sub(source, 2)
+    else source
+  return string.match(path, '^(.*)/[^/]*$') or '.'
+end
+
+local function asset(name: string): string return `{here()}/{name}` end
+
+local function contents(path: string): string
+  return buffer.tostring(assert(jess.fs.readBuffer(path), `{path} is missing`))
+end
+
+--- Holds `actual` to `expected` by length and digest before the bytes, so a miss says something
+--- shorter than both.
+local function same(actual: string, expected: string)
+  expect(#actual).toBe(#expected)
+  expect(bytes.sha256(actual)).toBe(bytes.sha256(expected))
+  expect(actual == expected).toBe(true)
+end
+
+--- An empty folder of the case's own under the suite's scratch root: the suite runs once from
+--- the source and once from the packed package, and the second run starts as clean as the first.
+local function folder(name: string): string
+  local root = assert(rawget(_G, 'scratchRoot') :: string?, 'the case needs a scratchRoot')
+  local path = jess.fs.join(root, 'tes3conv-cli', name)
+  jess.fs.createDir(path)
+
+  for _, entry in jess.fs.list(path) do
+    jess.fs.remove(jess.fs.join(path, entry))
+  end
+
+  return path
+end
+
+local function names(path: string): { string }
+  local listed = jess.fs.list(path)
+  table.sort(listed)
+  return listed
+end
+
+--- A result as `commands.convert` gives one, for `render` and `status` to read.
+local function result(fields: { [string]: unknown }): commands.ConvertResult
+  local made: { [string]: unknown } = {
+    command = 'convert',
+    input = 'test.esp',
+    from = 'plugin',
+    to = 'json',
+    records = 2,
+    size = 2,
+    dryRun = false,
+  }
+
+  for key, value in fields do
+    made[key] = value
+  end
+
+  return (made :: unknown) :: commands.ConvertResult
+end
+
+suite.describe('parse', function()
+  suite.it('reads the input, the output, and the flags into a request', function()
+    for _, case in Read do
+      local command, message = cli.parse(case.argv)
+      expect(command).toEqual { command = 'convert', request = case.request }
+      expect(message).toBeNil()
+    end
+  end)
+
+  suite.it('refuses what the original refuses, and standard input', function()
+    for _, case in Refused do
+      local command, message = cli.parse(case.argv)
+      expect(command).toBeNil()
+      expect(message).toBe(case.message)
+    end
+  end)
+
+  suite.it('reads a help flag anywhere, before what comes after it is looked at', function()
+    for _, argv in Help do
+      local command, message = cli.parse(argv)
+      expect(command).toEqual { command = 'help' }
+      expect(message).toBeNil()
+    end
+
+    -- What is wrong before it is found first.
+    local command, message = cli.parse { '-x', '--help' }
+    expect(command).toBeNil()
+    expect(message).toBe 'unknown option \'-x\''
+  end)
+
+  suite.it('touches no file', function()
+    local work = folder 'parse'
+    local missing = jess.fs.join(work, 'missing.esp')
+    local output = jess.fs.join(work, 'out.json')
+    local command = cli.parse { missing, output }
+    expect(command).toEqual { command = 'convert', request = { input = missing, output = output } }
+    expect(names(work)).toEqual {}
+  end)
+end)
+
+suite.describe('render', function()
+  suite.it('prints the JSON of a conversion that named nowhere for it to go', function()
+    expect(cli.render(result { bytes = '[]' })).toBe '[]'
+    local document = '[\n  {\n    "type": "Static"\n  }\n]'
+    expect(cli.render(result { bytes = document, size = #document })).toBe(document)
+  end)
+
+  suite.it('prints nothing for a file written, backed up, or only planned', function()
+    expect(cli.render(result { output = 'test.json' })).toBe ''
+    expect(cli.render(result { output = 'test.json', backup = 'test.000.json' })).toBe ''
+    expect(cli.render(result { output = 'test.esp', to = 'plugin', from = 'json' })).toBe ''
+    expect(cli.render(result { output = 'test.json', dryRun = true })).toBe ''
+    expect(cli.render(result {})).toBe ''
+  end)
+end)
+
+suite.describe('status', function()
+  suite.it('is 0 for every conversion that came back', function()
+    expect(cli.status(result { bytes = '[]' })).toBe(0)
+    expect(cli.status(result { output = 'test.json', backup = 'test.000.json' })).toBe(0)
+    expect(cli.status(result { output = 'test.json', dryRun = true })).toBe(0)
+    expect(cli.Exit).toEqual { ok = 0, invalidInput = 8, runtime = 9 }
+  end)
+end)
+
+suite.describe('run', function()
+  suite.it('converts a plugin to JSON and back, as tes3conv does', function()
+    local work = folder 'run'
+    local document, plugin = jess.fs.join(work, 'all_types.json'), jess.fs.join(work, 'back.esp')
+    expect(cli.run { asset 'assets/all_types.esp', document }).toBe(0)
+    same(contents(document), contents(asset 'golden/all_types.json'))
+    expect(cli.run { document, plugin }).toBe(0)
+    same(contents(plugin), contents(asset 'assets/all_types.esp'))
+    expect(names(work)).toEqual { 'all_types.json', 'back.esp' }
+  end)
+
+  suite.it('writes compact with -c, and backs up unless -o', function()
+    local work = folder 'run-flags'
+    local output = jess.fs.join(work, 'sample.json')
+    expect(cli.run { '-c', asset 'golden/sample.json', output }).toBe(0)
+    same(contents(output), contents(asset 'golden/sample.compact.json'))
+    expect(cli.run { asset 'golden/sample.json', output }).toBe(0)
+    same(contents(output), contents(asset 'golden/sample.pretty.json'))
+    same(contents(jess.fs.join(work, 'sample.000.json')), contents(asset 'golden/sample.compact.json'))
+    expect(cli.run { '--compact', '--overwrite', asset 'golden/sample.esp', output }).toBe(0)
+    same(contents(output), contents(asset 'golden/sample.esp.compact.json'))
+    expect(cli.run { '-co', asset 'golden/sample.json', output }).toBe(0)
+    expect(names(work)).toEqual { 'sample.000.json', 'sample.json' }
+  end)
+
+  suite.it('prints the usage and returns 0 for help', function()
+    expect(cli.run { '--help' }).toBe(0)
+    expect(cli.run { '-h' }).toBe(0)
+  end)
+
+  suite.it('returns 8 for a command line it can\'t use, and touches nothing', function()
+    local work = folder 'run-unusable'
+    local output = jess.fs.join(work, 'out.json')
+    local input = asset 'golden/sample.esp'
+    expect(cli.run {}).toBe(8)
+    expect(cli.run { '-c' }).toBe(8)
+    expect(cli.run { '-x', input, output }).toBe(8)
+    expect(cli.run { '-c', '--compact', input, output }).toBe(8)
+    expect(cli.run { input, output, 'more' }).toBe(8)
+    expect(cli.run { '-', output }).toBe(8)
+    expect(cli.run { jess.fs.join(work, 'missing.esp'), output }).toBe(8)
+    expect(cli.run { asset 'cli.luau', output }).toBe(8)
+    expect(cli.run { input, jess.fs.join(work, 'out.txt') }).toBe(8)
+    expect(cli.run { input, jess.fs.join(work, 'no such folder', 'out.json') }).toBe(8)
+    expect(names(work)).toEqual {}
+  end)
+
+  suite.it('returns 9 for a conversion that failed, and leaves the output as it was', function()
+    local work = folder 'run-failed'
+    local output = jess.fs.join(work, 'out.json')
+    local garbage, broken = jess.fs.join(work, 'garbage.esp'), jess.fs.join(work, 'broken.json')
+    jess.fs.write(output, 'old')
+    jess.fs.write(garbage, 'garbage')
+    jess.fs.write(broken, '[{"type":"Static"')
+    expect(cli.run { garbage, output }).toBe(9)
+    expect(cli.run { broken, output }).toBe(9)
+    expect(cli.run { '-o', broken, jess.fs.join(work, 'out.esp') }).toBe(9)
+    expect(contents(output)).toBe 'old'
+    expect(names(work)).toEqual { 'broken.json', 'garbage.esp', 'out.json' }
+  end)
+end)
+
+return suite
