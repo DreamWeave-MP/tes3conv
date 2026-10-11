@@ -37,12 +37,13 @@ export type Options = { lazy: { [string]: boolean }?, rawKeys: boolean? }
 
 local tes3conv = {}
 
+-- What the character after a JSON backslash stands for.
 local Escapes: { [string]: string } = {
-  n = '\n',
-  r = '\r',
-  t = '\t',
-  b = '\b',
-  f = '\f',
+  ['n'] = '\n',
+  ['r'] = '\r',
+  ['t'] = '\t',
+  ['b'] = '\b',
+  ['f'] = '\f',
   ['/'] = '/',
   ['\\'] = '\\',
   ['"'] = '"',
