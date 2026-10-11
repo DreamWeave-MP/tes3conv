@@ -1,0 +1,394 @@
+--!strict
+--!native
+-- `@tes3conv/commands`: a conversion as a request and a result. Every case reads the result
+-- table and the files; nothing here looks at what a terminal would show. The outputs are held
+-- to the files tes3conv 0.4.1 wrote for the same inputs (see `encode.luau` for which is which),
+-- and the backups to the names it gave its own.
+local bytes = require '@dream/bytes'
+local commands = require '@tes3conv/commands'
+local tes3 = require '@tes3'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+-- What each name holds, going by its extension.
+local Formats: { { path: string, format: string? } } = {
+  { path = 'a.esp', format = 'plugin' },
+  { path = 'a.esm', format = 'plugin' },
+  { path = 'a.omwaddon', format = 'plugin' },
+  { path = 'a.json', format = 'json' },
+  { path = 'Data Files/Some.Mod.ESP', format = 'plugin' },
+  { path = 'a.Json', format = 'json' },
+  { path = 'a.b.json', format = 'json' },
+  { path = 'a.ess', format = nil },
+  { path = 'a.omwgame', format = nil },
+  { path = 'a.omwsave', format = nil },
+  { path = 'a.txt', format = nil },
+  { path = 'a.json.bak', format = nil },
+  { path = 'json', format = nil },
+  { path = '.json', format = nil },
+  { path = 'folder/.esp', format = nil },
+  { path = 'a.', format = nil },
+  { path = '', format = nil },
+  { path = '-', format = nil },
+}
+
+--- Where this file is, from its chunk name: the folder the suite and its assets are in.
+local function here(): string
+  local source = debug.info(1, 's')
+  local path = if string.sub(source, 1, 1) == '@' or string.sub(source, 1, 1) == '='
+    then string.sub(source, 2)
+    else source
+  return string.match(path, '^(.*)/[^/]*$') or '.'
+end
+
+local function asset(name: string): string return `{here()}/{name}` end
+
+local function contents(path: string): string
+  return buffer.tostring(assert(jess.fs.readBuffer(path), `{path} is missing`))
+end
+
+--- Holds `actual` to `expected` by length and digest before the bytes, so a miss says something
+--- shorter than both.
+local function same(actual: string, expected: string)
+  expect(#actual).toBe(#expected)
+  expect(bytes.sha256(actual)).toBe(bytes.sha256(expected))
+  expect(actual == expected).toBe(true)
+end
+
+--- An empty folder of the case's own under the suite's scratch root: the suite runs once from
+--- the source and once from the packed package, and the second run starts as clean as the first.
+local function folder(name: string): string
+  local root = assert(rawget(_G, 'scratchRoot') :: string?, 'the case needs a scratchRoot')
+  local path = jess.fs.join(root, 'tes3conv-commands', name)
+  jess.fs.createDir(path)
+
+  for _, entry in jess.fs.list(path) do
+    jess.fs.remove(jess.fs.join(path, entry))
+  end
+
+  return path
+end
+
+local function names(path: string): { string }
+  local listed = jess.fs.list(path)
+  table.sort(listed)
+  return listed
+end
+
+suite.describe('formatOf', function()
+  suite.it('goes by the extension, whatever its case', function()
+    for _, case in Formats do
+      expect(commands.formatOf(case.path)).toBe(case.format)
+    end
+  end)
+end)
+
+suite.describe('check', function()
+  suite.it('passes a request that names a file to read, and one to write beside others', function()
+    local work = folder 'check-passes'
+    local input = asset 'assets/all_types.esp'
+    expect(commands.check { input = input }).toBeNil()
+    expect(commands.check { input = input, output = jess.fs.join(work, 'out.json') }).toBeNil()
+    expect(commands.check { input = input, output = 'out.esm', compact = true }).toBeNil()
+    expect(commands.check { input = input, sink = function() end }).toBeNil()
+    expect(names(work)).toEqual {}
+  end)
+
+  suite.it('says why a request can\'t be carried out, without converting anything', function()
+    local work = folder 'check-refuses'
+    local input = asset 'assets/all_types.esp'
+    local missing = jess.fs.join(work, 'missing.esp')
+    local nested = jess.fs.join(work, 'no such folder', 'out.json')
+    local taken = jess.fs.join(work, 'taken.json')
+    jess.fs.createDir(taken)
+    expect(commands.check { input = 'plugin.txt' }).toBe '\'plugin.txt\' isn\'t a file tes3conv reads: it reads .esp, .esm, .omwaddon, and .json files'
+    expect(commands.check { input = '-' }).toBe '\'-\' isn\'t a file tes3conv reads: it reads .esp, .esm, .omwaddon, and .json files'
+    expect(commands.check { input = missing }).toBe(`'{missing}' doesn't exist`)
+    expect(commands.check { input = taken }).toBe(`'{taken}' isn't a file`)
+    expect(commands.check { input = input, output = 'out.txt' }).toBe '\'out.txt\' isn\'t a file tes3conv writes: it writes .esp, .esm, .omwaddon, and .json files'
+    expect(commands.check { input = input, output = taken }).toBe(`'{taken}' is there already and isn't a file`)
+    expect(commands.check { input = input, output = nested }).toBe(`'{jess.fs.join(work, 'no such folder')}', the folder '{nested}' goes in, doesn't exist`)
+    expect(commands.check { input = input, output = 'out.json', sink = function() end }).toBe 'a request names an output or a sink, not both'
+  end)
+
+  suite.it('is what convert raises for the same request', function()
+    expect(function() commands.convert { input = 'plugin.txt' } end).toThrow 'isn\'t a file tes3conv reads'
+    expect(function() commands.convert { input = asset 'assets/all_types.esp', output = 'out.txt' } end).toThrow 'isn\'t a file tes3conv writes'
+  end)
+end)
+
+suite.describe('convert', function()
+  suite.it('writes a plugin as the JSON tes3conv writes, and says what it did', function()
+    local work = folder 'plugin-to-json'
+    local input, output = asset 'assets/all_types.esp', jess.fs.join(work, 'all_types.json')
+    local result = commands.convert { input = input, output = output }
+    expect(result).toEqual {
+      command = 'convert',
+      input = input,
+      from = 'plugin',
+      to = 'json',
+      records = 80,
+      size = 102719,
+      output = output,
+      dryRun = false,
+    }
+
+    same(contents(output), contents(asset 'golden/all_types.json'))
+    expect(names(work)).toEqual { 'all_types.json' }
+  end)
+
+  suite.it('writes it compact when asked', function()
+    local work = folder 'plugin-to-compact'
+    local output = jess.fs.join(work, 'all_types.JSON')
+    local result = commands.convert {
+      input = asset 'assets/all_types.esp',
+      output = output,
+      compact = true,
+      overwrite = true,
+    }
+
+    expect(result.size).toBe(77194)
+    expect(result.to).toBe 'json'
+    same(contents(output), contents(asset 'golden/all_types.compact.json'))
+  end)
+
+  suite.it('writes a document as the plugin tes3conv compiles, from either form', function()
+    local work = folder 'json-to-plugin'
+    local source = contents(asset 'assets/all_types.esp')
+    local output = jess.fs.join(work, 'all_types.esp')
+    local result = commands.convert { input = asset 'golden/all_types.json', output = output }
+    expect(result).toEqual {
+      command = 'convert',
+      input = asset 'golden/all_types.json',
+      from = 'json',
+      to = 'plugin',
+      records = 80,
+      size = 49483,
+      output = output,
+      dryRun = false,
+    }
+
+    same(contents(output), source)
+    local again = jess.fs.join(work, 'compact.omwaddon')
+    commands.convert { input = asset 'golden/all_types.compact.json', output = again }
+    same(contents(again), source)
+    expect(names(work)).toEqual { 'all_types.esp', 'compact.omwaddon' }
+  end)
+
+  suite.it('gives a plugin the file type its name stands for, and counts its records', function()
+    local work = folder 'file-types'
+    local plugin, master = jess.fs.join(work, 'sample.esp'), jess.fs.join(work, 'sample.esm')
+    local addon = jess.fs.join(work, 'sample.omwaddon')
+    local input = asset 'golden/sample.json'
+    expect(commands.convert({ input = input, output = plugin }).records).toBe(12)
+    commands.convert { input = input, output = master }
+    commands.convert { input = input, output = addon }
+    same(contents(plugin), contents(asset 'golden/sample.esp'))
+    same(contents(master), contents(asset 'golden/sample.esm'))
+    same(contents(addon), contents(asset 'golden/sample.esm'))
+    expect(tes3.open(contents(plugin)):header().recordCount).toBe(11)
+  end)
+
+  suite.it('reads the input as what it holds, and writes what the output\'s name says', function()
+    local work = folder 'by-content'
+    local disguised = jess.fs.join(work, 'really a plugin.json')
+    local document = jess.fs.join(work, 'really a document.esp')
+    jess.fs.write(disguised, contents(asset 'golden/sample.esp'))
+    jess.fs.write(document, contents(asset 'golden/sample.json'))
+    local reformatted = jess.fs.join(work, 'reformatted.json')
+    local rewritten = jess.fs.join(work, 'rewritten.esp')
+    local fromDocument = commands.convert { input = document, output = reformatted }
+    expect(fromDocument.from).toBe 'json'
+    expect(fromDocument.to).toBe 'json'
+    same(contents(reformatted), contents(asset 'golden/sample.pretty.json'))
+    local fromPlugin = commands.convert { input = disguised, output = rewritten }
+    expect(fromPlugin.from).toBe 'plugin'
+    expect(fromPlugin.to).toBe 'plugin'
+    same(contents(rewritten), contents(asset 'golden/sample.esp'))
+  end)
+
+  suite.it('returns the JSON when the request names nowhere for it to go', function()
+    local input = asset 'golden/sample.esp'
+    local result = commands.convert { input = input, compact = true }
+    expect(result.output).toBeNil()
+    expect(result.backup).toBeNil()
+    expect(result.to).toBe 'json'
+    expect(result.records).toBe(12)
+    same(result.bytes :: string, contents(asset 'golden/sample.esp.compact.json'))
+    expect(result.size).toBe(#(result.bytes :: string))
+    -- A document with no output is JSON again, as the program prints it.
+    local document = commands.convert { input = asset 'golden/sample.json' }
+    expect(document.from).toBe 'json'
+    expect(document.to).toBe 'json'
+    same(document.bytes :: string, contents(asset 'golden/sample.pretty.json'))
+  end)
+
+  suite.it('hands the JSON to the request\'s sink instead of returning it', function()
+    local chunks: { string } = {}
+    local result = commands.convert {
+      input = asset 'assets/all_types.esp',
+      sink = function(chunk: buffer, length: number)
+        table.insert(chunks, buffer.readstring(chunk, 0, length))
+      end,
+    }
+
+    expect(result.bytes).toBeNil()
+    expect(result.size).toBe(102719)
+    expect(result.records).toBe(80)
+    same(table.concat(chunks), contents(asset 'golden/all_types.json'))
+  end)
+
+  suite.it('converts a file over itself', function()
+    local work = folder 'in-place'
+    local path = jess.fs.join(work, 'sample.json')
+    jess.fs.write(path, contents(asset 'golden/sample.json'))
+    local result = commands.convert { input = path, output = path, compact = true }
+    expect(result.backup).toBe(jess.fs.join(work, 'sample.000.json'))
+    same(contents(path), contents(asset 'golden/sample.compact.json'))
+    same(contents(result.backup :: string), contents(asset 'golden/sample.json'))
+  end)
+end)
+
+suite.describe('backups', function()
+  suite.it('copies a file already there to the first free numbered name', function()
+    local work = folder 'backups'
+    local output = jess.fs.join(work, 'out.json')
+    local input = asset 'golden/sample.esp'
+    jess.fs.write(output, 'the first')
+    local first = commands.convert { input = input, output = output, compact = true }
+    expect(first.backup).toBe(jess.fs.join(work, 'out.000.json'))
+    expect(contents(first.backup :: string)).toBe 'the first'
+    jess.fs.write(output, 'the second')
+    local second = commands.convert { input = input, output = output, compact = true }
+    expect(second.backup).toBe(jess.fs.join(work, 'out.001.json'))
+    expect(contents(second.backup :: string)).toBe 'the second'
+    expect(contents(first.backup :: string)).toBe 'the first'
+    jess.fs.remove(first.backup :: string)
+    local third = commands.convert { input = input, output = output, compact = true }
+    expect(third.backup).toBe(jess.fs.join(work, 'out.000.json'))
+    same(contents(third.backup :: string), contents(asset 'golden/sample.esp.compact.json'))
+    expect(names(work)).toEqual { 'out.000.json', 'out.001.json', 'out.json' }
+  end)
+
+  suite.it('numbers a backup before the last extension only', function()
+    local work = folder 'backup-names'
+    local dotted = jess.fs.join(work, 'Some.Mod v1.2.ESP')
+    jess.fs.write(dotted, 'old')
+    local result = commands.convert { input = asset 'golden/sample.json', output = dotted }
+    expect(result.backup).toBe(jess.fs.join(work, 'Some.Mod v1.2.000.ESP'))
+    expect(contents(result.backup :: string)).toBe 'old'
+  end)
+
+  suite.it('makes none when there is nothing there, or when told to overwrite', function()
+    local work = folder 'overwrite'
+    local output = jess.fs.join(work, 'out.json')
+    local input = asset 'golden/sample.esp'
+    expect(commands.convert({ input = input, output = output }).backup).toBeNil()
+    jess.fs.write(output, 'old')
+    local result = commands.convert { input = input, output = output, overwrite = true, compact = true }
+    expect(result.backup).toBeNil()
+    same(contents(output), contents(asset 'golden/sample.esp.compact.json'))
+    expect(names(work)).toEqual { 'out.json' }
+  end)
+
+  suite.it('refuses to write when a thousand backups are kept already', function()
+    local work = folder 'thousand'
+    local output = jess.fs.join(work, 'out.json')
+    jess.fs.write(output, 'old')
+
+    for number = 0, 999 do
+      jess.fs.write(jess.fs.join(work, string.format('out.%03d.json', number)), '')
+    end
+
+    expect(function() commands.convert { input = asset 'golden/sample.esp', output = output } end).toThrow 'can\'t be backed up: a thousand backups of it are kept already'
+    expect(contents(output)).toBe 'old'
+    expect(#names(work)).toBe(1001)
+    expect(function()
+      commands.convert { input = asset 'golden/sample.esp', output = output, dryRun = true }
+    end).toThrow 'a thousand backups of it are kept already'
+    jess.fs.remove(jess.fs.join(work, 'out.417.json'))
+    local result = commands.convert { input = asset 'golden/sample.esp', output = output }
+    expect(result.backup).toBe(jess.fs.join(work, 'out.417.json'))
+    expect(contents(result.backup :: string)).toBe 'old'
+  end)
+end)
+
+suite.describe('dry runs', function()
+  suite.it('say what would be written and backed up, and write nothing', function()
+    local work = folder 'dry-run'
+    local output = jess.fs.join(work, 'out.json')
+    local input = asset 'assets/all_types.esp'
+    local fresh = commands.convert { input = input, output = output, dryRun = true }
+    expect(fresh).toEqual {
+      command = 'convert',
+      input = input,
+      from = 'plugin',
+      to = 'json',
+      records = 80,
+      size = 102719,
+      output = output,
+      dryRun = true,
+    }
+
+    expect(names(work)).toEqual {}
+    jess.fs.write(output, 'old')
+    local over = commands.convert { input = input, output = output, dryRun = true, compact = true }
+    expect(over.backup).toBe(jess.fs.join(work, 'out.000.json'))
+    expect(over.size).toBe(77194)
+    expect(over.bytes).toBeNil()
+    expect(contents(output)).toBe 'old'
+    expect(names(work)).toEqual { 'out.json' }
+    local kept = commands.convert { input = input, output = output, dryRun = true, overwrite = true }
+    expect(kept.backup).toBeNil()
+    expect(names(work)).toEqual { 'out.json' }
+  end)
+
+  suite.it('still raise for an input that can\'t be converted', function()
+    local work = folder 'dry-run-fails'
+    local garbage = jess.fs.join(work, 'garbage.esp')
+    jess.fs.write(garbage, 'garbage')
+    expect(function()
+      commands.convert { input = garbage, output = jess.fs.join(work, 'out.json'), dryRun = true }
+    end).toThrow 'is neither a TES3 plugin nor a tes3conv JSON document'
+    expect(names(work)).toEqual { 'garbage.esp' }
+  end)
+end)
+
+suite.describe('failures', function()
+  suite.it('leave the output as it was, and nothing half written beside it', function()
+    local work = folder 'failures'
+    local output = jess.fs.join(work, 'out.json')
+    local garbage, empty = jess.fs.join(work, 'garbage.esp'), jess.fs.join(work, 'empty.json')
+    local cut, broken = jess.fs.join(work, 'cut.esp'), jess.fs.join(work, 'broken.json')
+    local strange = jess.fs.join(work, 'strange.json')
+    jess.fs.write(output, 'old')
+    jess.fs.write(garbage, 'garbage')
+    jess.fs.write(empty, '')
+    jess.fs.write(cut, string.sub(contents(asset 'assets/all_types.esp'), 1, 1000))
+    jess.fs.write(broken, '[{"type":"Static","flags":"","id":"x"')
+    jess.fs.write(strange, '[{"type":"Starship","id":"x"}]')
+    local before = names(work)
+    expect(function() commands.convert { input = garbage, output = output } end).toThrow(`'{garbage}' is neither a TES3 plugin nor a tes3conv JSON document`)
+    expect(function() commands.convert { input = empty, output = output } end).toThrow(`'{empty}' is neither a TES3 plugin nor a tes3conv JSON document`)
+    expect(function() commands.convert { input = cut, output = output } end).toThrow(`'{cut}' can't be read as a plugin: `)
+    expect(function() commands.convert { input = broken, output = output } end).toThrow(`'{broken}' can't be converted: the document ends inside record 1`)
+    expect(function() commands.convert { input = strange, output = output } end).toThrow(`'{strange}' can't be converted: 'Starship' isn't a record type tes3conv writes`)
+    expect(function()
+      commands.convert { input = strange, output = jess.fs.join(work, 'out.esp') }
+    end).toThrow(`'{strange}' can't be converted: tes3conv.compileTo: records must start with a Header`)
+    expect(contents(output)).toBe 'old'
+    expect(names(work)).toEqual(before)
+  end)
+
+  suite.it('raise what the request\'s sink raised', function()
+    expect(function()
+      commands.convert {
+        input = asset 'golden/sample.esp',
+        sink = function() error('the window closed', 0) end,
+      }
+    end).toThrow 'can\'t be converted: the window closed'
+  end)
+end)
+
+return suite

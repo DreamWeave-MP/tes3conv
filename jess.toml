@@ -10,6 +10,7 @@ tests = [
   "tests/records.luau",
   "tests/encode.luau",
   "tests/stream.luau",
+  "tests/commands.luau",
   "tests/style.luau",
 ]
 
