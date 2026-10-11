@@ -14,6 +14,8 @@ written into a plugin the way tes3conv writes them.
   write(path, records, options?)  the same, into a file
   transcribe(plugin, options?)    a plugin as that text, one record at a time
   transcribeTo(source, sink, options?)  a plugin or a document as that text, streamed
+  compile(records, fileName?)     the plugin tes3conv writes from the records into that file
+  compileTo(source, sink, fileName?)    a plugin or a document as that plugin, streamed
 
 Records come out as `plugin:decode(index)` spells them: a `type` field holding the type name, and
 camelCase field names (`speaker_id` is `speakerId`). Values are left as tes3conv wrote them: flags
@@ -38,14 +40,21 @@ them, with camelCase keys, as `decode` gives them without `rawKeys`. Values are 
 are spelled: tes3conv, which reads a document into numbers before it writes one, would respell
 flags given in another order (`DELETED | PERSISTENT`), and `encode` doesn't.
 
+`compile` is everything `tes3conv plugin.json <fileName>` does to a document's records on the way
+to a plugin: it sorts them, keeps one reference per master and index in each cell, and writes a
+header that counts the records after it and has the file type an `.esp` or `.esm` name stands
+for, whatever the document's header said. `plugin` is the part of that which writes. Records
+with no header aren't compiled; tes3conv writes them as they are, a plugin with none.
+
 Everything above works on values in memory, and a master's records as tables are several times
-the master. `transcribeTo` is the same conversion for a whole file, which never holds them: the
-source is a plugin or a document, each record is read, written, and let go, and the output is
-handed to a sink a chunk of at most a megabyte at a time. A document is its text, or a `Text`,
-which reads it a stretch at a time from wherever it is, so that it need not be held either. What
-it holds is a plugin's bytes, whole (`@tes3` opens a plugin from all of it), or a quarter
-megabyte of a document at a time; where each record is and the id tes3conv's order goes by; one
-record's tables; and one chunk. Its output is byte for byte `encode`'s.
+the master. `transcribeTo` and `compileTo` are the same two conversions for a whole file, which
+never hold them: the source is a plugin or a document, each record is read, written, and let go,
+and the output is handed to a sink a chunk of at most a megabyte at a time. A document is its
+text, or a `Text`, which reads it a stretch at a time from wherever it is, so that it need not be
+held either. What they hold is a plugin's bytes, whole (`@tes3` opens a plugin from all of it),
+or a quarter megabyte of a document at a time; where each record is and the id tes3conv's order
+goes by; one record's tables; and one chunk. Their output is byte for byte `encode`'s and
+`compile(...):save()`'s.
 ]]
 
 local Encode = require '@self/encode'
@@ -61,8 +70,8 @@ export type Options = { lazy: { [string]: boolean }?, rawKeys: boolean? }
 --- `compact` leaves out the indentation, as `tes3conv --compact` does.
 export type EncodeOptions = { compact: boolean? }
 
---- Takes the next `length` bytes of what `transcribeTo` writes: the first `length` of `chunk`,
---- which is written over once the sink returns.
+--- Takes the next `length` bytes of what `transcribeTo` or `compileTo` writes: the first `length`
+--- of `chunk`, which is written over once the sink returns.
 export type Sink = Encode.Sink
 
 --- Text too long to hold, read a stretch at a time: its length in bytes, and the `length` bytes
@@ -742,6 +751,74 @@ function tes3conv.transcribe(plugin: core.Plugin, options: EncodeOptions?): stri
   local sink, chunks = keeper()
   tes3conv.transcribeTo(plugin, sink, options)
   return joined(chunks)
+end
+
+-- The file type tes3 gives the header of a plugin it saves under a name with this extension.
+local FileTypes: { [string]: string } = { esp = 'Esp', esm = 'Esm' }
+
+-- The header tes3conv writes in place of `header` over `count` records, itself among them,
+-- into a file of this name: one that counts the records after it and has the file type an
+-- `.esp` or `.esm` name stands for.
+local function headed(header: Table, count: number, fileName: string?): Table
+  local copy = table.clone(header)
+  local extension = string.match(string.lower(fileName or ''), '%.([^./\\]+)$')
+  copy.numObjects = count - 1
+  copy.fileType = FileTypes[extension or ''] or copy.fileType
+  return copy
+end
+
+-- The plugin `tes3conv plugin.json <fileName>` writes from a document's records. Without a file
+-- name, or with one that is neither an `.esp` nor an `.esm`, the header keeps its file type.
+function tes3conv.compile(records: Records, fileName: string?): core.Plugin
+  local sorted = tes3conv.sort(records)
+  local first = sorted[1]
+
+  if first and first.type == 'Header' then
+    sorted[1] = headed(tes3conv.realize(first), #sorted, fileName)
+  end
+
+  for index = 2, #sorted do
+    local record = tes3conv.realize(sorted[index])
+
+    if record.type == 'Cell' then sorted[index] = settled(record) end
+  end
+
+  return tes3conv.plugin(sorted)
+end
+
+-- Writes the plugin `compile` builds, from a plugin or from a tes3conv document (its text, or a
+-- `Text`), handing its bytes to `sink` a chunk at a time, and returns how many records it wrote:
+-- what `compile(...):save()` holds, without holding it. A document's records are read from it
+-- one at a time, written, and let go.
+function tes3conv.compileTo(
+  source: core.Plugin | string | Text,
+  sink: Sink,
+  fileName: string?
+): number
+  local from = sourceOf(source)
+  local order = tes3.sortPermutation(from.keys)
+  local first = order[1]
+
+  if not first or from.keys[first].type ~= 'Header' then
+    error('tes3conv.compileTo: records must start with a Header', 0)
+  end
+
+  Encode.open(sink)
+
+  for place, position in order do
+    local record = from.read(position)
+
+    if place == 1 then
+      record = headed(record, from.count, fileName)
+    else
+      record = tes3conv.prepare(if record.type == 'Cell' then settled(record) else record)
+    end
+
+    Encode.bytes(core.encode((record :: unknown) :: core.Value))
+  end
+
+  Encode.close()
+  return from.count
 end
 
 return tes3conv
