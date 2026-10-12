@@ -432,13 +432,7 @@ local function comparedPermutation(records: Records): { number }
     return left.position < right.position
   end)
 
-  local permutation = {}
-
-  for position, entry in entries do
-    permutation[position] = entry.position
-  end
-
-  return permutation
+  return [for entry in entries => entry.position]
 end
 
 -- The positions of `records` in `sortObjects` order. Each record's place is written as one
