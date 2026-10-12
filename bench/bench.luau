@@ -97,18 +97,26 @@ end
 
 local Objects = { 'ex_common_door_01', 'flora_tree_ai_04', 'terrain_rock_wg_10', 'light_com_torch', 'barrel_01' }
 
---- A cell's reference as `decode` gives one.
+local narrow = buffer.create(4)
+
+--- The f32 nearest `value`: a plugin's floats are f32s, and nearly all take eight or nine digits.
+local function single(value: number): number
+  buffer.writef32(narrow, 0, value)
+  return buffer.readf32(narrow, 0)
+end
+
+--- A cell's reference as `decode` gives one, placed wherever a mouse left it.
 local function reference(master: number, index: number, temporary: boolean): Record
   local made: Record = {
     mastIndex = master,
     refrIndex = index,
     id = Objects[nextRandom() % #Objects + 1],
     translation = {
-      (nextRandom() % 1000000) / 8 - 60000,
-      (nextRandom() % 1000000) / 8 - 60000,
-      (nextRandom() % 40000) / 16,
+      single(nextRandom() % 120000000 / 997 - 60000),
+      single(nextRandom() % 120000000 / 997 - 60000),
+      single(nextRandom() % 4000000 / 997),
     },
-    rotation = { 0, 0, (nextRandom() % 6283) / 1000 },
+    rotation = { 0, 0, single(nextRandom() % 6283185 / 1000000) },
   }
 
   if temporary then made.temporary = true end
