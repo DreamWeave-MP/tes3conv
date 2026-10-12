@@ -107,6 +107,82 @@ local function setting(text: string): Record
   return { type = 'GameSetting', flags = '', id = 's', value = { type = 'String', data = text } }
 end
 
+--- Whether `left` goes before `right` in a cell: persistent first, then a master's before the
+--- plugin's own, by master and then by index.
+local function before(left: Record, right: Record): boolean
+  local leftKept, rightKept = tes3conv.isPersistent(left), tes3conv.isPersistent(right)
+  if leftKept ~= rightKept then return leftKept end
+
+  local leftMaster = if left.mastIndex == 0 then math.huge else left.mastIndex
+  local rightMaster = if right.mastIndex == 0 then math.huge else right.mastIndex
+  if leftMaster ~= rightMaster then return leftMaster < rightMaster end
+
+  return left.refrIndex < right.refrIndex
+end
+
+--- The references tes3conv holds of the ones given: the last given with each master and index,
+--- where the first was, in its order.
+local function settled(given: { Record }): { Record }
+  local unique: { Record }, positions: { [number]: number } = {}, {}
+
+  for _, reference in given do
+    local key = reference.mastIndex * 16777216 + reference.refrIndex
+    local position = positions[key] or #unique + 1
+    positions[key] = position
+    unique[position] = reference
+  end
+
+  table.sort(unique, before)
+  return unique
+end
+
+--- `count` references and then some, each with an id of its own. `ordered`: in tes3conv's order,
+--- no two alike. `twins`: the same, with temporary references that share a persistent one's
+--- master and index. `scattered`: in no order, some sharing a master and index. `strange`: the
+--- same, some with a master or an index no plugin holds.
+local function cellReferences(count: number, shape: string): { Record }
+  local odd = { 16777216, 33554432, 1099511627776, -1, -5, 16777215 }
+  local state = 20260411
+
+  local function pick(limit: number): number
+    state = (state * 48271) % 2147483647
+    return state % limit + 1
+  end
+
+  local list: { Record } = {}
+
+  local function add(master: number, index: number, temporary: boolean)
+    table.insert(list, {
+      id = `r{#list + 1}`,
+      mastIndex = master,
+      refrIndex = index,
+      temporary = if temporary then true else nil,
+      translation = { 0, 0, 0 },
+      rotation = { 0, 0, 0 },
+    })
+  end
+
+  for position = 1, count do
+    local shared = shape == 'scattered' or shape == 'strange'
+    add(pick(3) - 1, if shared then pick(count) else position, pick(3) > 1)
+
+    if shape == 'strange' and pick(3) == 1 then list[#list].mastIndex = odd[pick(#odd)] end
+
+    if shape == 'strange' and pick(3) == 1 then list[#list].refrIndex = odd[pick(#odd)] end
+  end
+
+  if shape == 'twins' then
+    for position = 1, count do
+      local first = list[position]
+      if not first.temporary and pick(2) == 1 then add(first.mastIndex, first.refrIndex, true) end
+    end
+  end
+
+  if shape == 'ordered' or shape == 'twins' then table.sort(list, before) end
+
+  return list
+end
+
 --- Twenty thousand f32 values of every size, the same every time: bit patterns from a
 --- Park-Miller sequence, which stays exact in doubles.
 local function floats(): { number }
@@ -338,6 +414,74 @@ suite.describe('refusals', function()
   suite.it('writes what follows a refusal as if it hadn\'t happened', function()
     expect(function() tes3conv.encode { global('g', 'much') } end).toThrow 'expected a number'
     expect(tes3conv.encode({ global('g', 1) }, Compact)).toBe '[{"type":"GlobalVariable","flags":"","id":"g","value":{"type":"Float","data":1.0}}]'
+  end)
+
+  suite.it('holds a cell to one reference per master and index, however they are given', function()
+    for _, shape in { 'ordered', 'twins', 'scattered', 'strange' } do
+      for _, count in { 1, 2, 3, 9, 60, 400 } do
+        local given = cellReferences(count, shape)
+        local cell: Record = {
+          type = 'Cell',
+          flags = '',
+          name = 'Hangar',
+          data = { flags = 'IS_INTERIOR', grid = { 0, 0 } },
+          references = given,
+        }
+        local written: { Record } = tes3conv.decode(tes3conv.encode({ cell }, Compact))
+        local got, expected = {}, {}
+
+        for _, reference in written[1].references do
+          table.insert(got, reference.id)
+        end
+
+        for _, reference in settled(given) do
+          table.insert(expected, reference.id)
+        end
+
+        if table.concat(got, ' ') ~= table.concat(expected, ' ') then
+          error(`{count} {shape} references came out as {table.concat(got, ' ')}`, 0)
+        end
+
+        expect(cell.references).toBe(given)
+      end
+    end
+  end)
+
+  suite.it('drops a persistent reference for the temporary one after it with its master and index', function()
+    local cell: Record = {
+      type = 'Cell',
+      flags = '',
+      name = 'Hangar',
+      data = { flags = 'IS_INTERIOR', grid = { 0, 0 } },
+      references = {
+        { id = 'kept', mastIndex = 1, refrIndex = 5, translation = { 0, 0, 0 }, rotation = { 0, 0, 0 } },
+        { id = 'own', mastIndex = 0, refrIndex = 5, translation = { 0, 0, 0 }, rotation = { 0, 0, 0 } },
+        {
+          id = 'twin',
+          mastIndex = 1,
+          refrIndex = 5,
+          temporary = true,
+          translation = { 0, 0, 0 },
+          rotation = { 0, 0, 0 },
+        },
+        {
+          id = 'last',
+          mastIndex = 0,
+          refrIndex = 9,
+          temporary = true,
+          translation = { 0, 0, 0 },
+          rotation = { 0, 0, 0 },
+        },
+      },
+    }
+    local written: { Record } = tes3conv.decode(tes3conv.encode { cell })
+    local order = {}
+
+    for _, reference in written[1].references do
+      table.insert(order, reference.id)
+    end
+
+    expect(order).toEqual { 'own', 'twin', 'last' }
   end)
 
   suite.it('refuses a cell reference with no place in the cell', function()
