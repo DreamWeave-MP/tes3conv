@@ -576,9 +576,12 @@ function tes3conv.records(plugin: core.Plugin): Records return (tes3conv.records
 --- Whether a list of references is one tes3conv would hold as it stands: in its order, no two
 --- with one master and index. That is told from their places alone when they only rise, as a
 --- plugin's do: two references with one master and index are then a persistent one and one
---- that isn't, found by walking the two runs side by side. False, too, for a table that isn't a
---- list and for a master or an index no plugin holds, which `settled` looks at one by one.
+--- that isn't, found by walking the two runs side by side. False, too, for anything that isn't a
+--- list and for a master or an index no plugin holds, which `settled` looks at one by one: a
+--- document can give a cell a number or a null for its references, and `settled` refuses it.
 local function orderly(references: { Table }): boolean
+  if type(references) ~= 'table' then return false end
+
   local count = #references
   local keys = buffer.create(count * 8)
   local seen, kept, last = 0, count, -1
