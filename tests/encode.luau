@@ -494,6 +494,32 @@ suite.describe('refusals', function()
     }
     expect(function() tes3conv.encode { cell } end).toThrow 'a reference of cell \'Hangar\' has no mast_index or refr_index'
   end)
+
+  suite.it('refuses a cell whose references aren\'t a list where it walks them', function()
+    local header: Record = {
+      type = 'Header',
+      flags = '',
+      version = 1.3,
+      fileType = 'Esp',
+      author = '',
+      description = '',
+      numObjects = 1,
+      masters = {},
+    }
+
+    for _, references in { 5, true, jess.null, 'crate' } :: { any } do
+      local cell: Record = {
+        type = 'Cell',
+        flags = '',
+        name = 'Hangar',
+        data = { flags = 'IS_INTERIOR', grid = { 0, 0 } },
+        references = references,
+      }
+      local refusal = `attempt to iterate over a {type(references)} value`
+      expect(function() tes3conv.encode { cell } end).toThrow(refusal)
+      expect(function() tes3conv.compile({ header, cell }, 'x.esp') end).toThrow(refusal)
+    end
+  end)
 end)
 
 suite.describe('every type', function()
