@@ -75,11 +75,7 @@ end
 local Unsafe = '[%z\1-\31"\\]'
 
 -- `%.0e` to `%.8e`: an f32 never needs more than nine digits.
-local Precisions: { string } = {}
-
-for digits = 0, 8 do
-  Precisions[digits + 1] = `%.{digits}e`
-end
+local Precisions: { string } = [for digits in range(0, 8) => `%.{digits}e`]
 
 -- The powers of ten a double holds exactly, from 10^0.
 local Powers: { [number]: number } = {}
@@ -159,26 +155,20 @@ local function compile(node: Node, seen: { [Node]: Plan }): Plan
   local known = seen[node]
   if known then return known end
 
+  local members = node.fields or {}
   local plan: Plan = {
     kind = node.kind,
-    keys = {},
-    names = {},
+    keys = [for member in members => member.key],
+    names = [for member in members => member.name],
     plans = {},
-    first = {},
-    rest = {},
+    first = [for member in members => `"{member.name}":`],
+    rest = [for member in members => `,"{member.name}":`],
     firstAt = {},
     restAt = {},
     variants = {},
   }
   seen[node] = plan
-
-  for _, field in node.fields or {} do
-    table.insert(plan.keys, field.key)
-    table.insert(plan.names, field.name)
-    table.insert(plan.plans, compile(field.node, seen))
-    table.insert(plan.first, `"{field.name}":`)
-    table.insert(plan.rest, `,"{field.name}":`)
-  end
+  plan.plans = [for member in members => compile(member.node, seen)]
 
   if node.item then plan.item = compile(node.item, seen) end
 
@@ -613,14 +603,9 @@ local function prefixes(plan: Plan, depth: number): ({ string }, { string })
   local first = plan.firstAt[depth]
   if first then return first, plan.restAt[depth] end
 
-  local opened: { string } = table.create(#plan.names)
-  local continued: { string } = table.create(#plan.names)
-
-  for index, name in plan.names do
-    opened[index] = `{Breaks[depth]}"{name}": `
-    continued[index] = `,{Breaks[depth]}"{name}": `
-  end
-
+  local indent = Breaks[depth]
+  local opened = [for name in plan.names => `{indent}"{name}": `]
+  local continued = [for name in plan.names => `,{indent}"{name}": `]
   plan.firstAt[depth] = opened
   plan.restAt[depth] = continued
   return opened, continued
