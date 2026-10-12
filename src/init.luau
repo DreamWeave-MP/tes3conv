@@ -59,6 +59,7 @@ goes by; one record's tables; and one chunk. Their output is byte for byte `enco
 
 local Encode = require '@self/encode'
 local bytes = require '@dream/bytes'
+local data = require '@dream/data'
 local tes3 = require '@self/records'
 local core = require '@tes3'
 
@@ -438,9 +439,73 @@ local function before(left: Table, right: Table): boolean
   return (left.refrIndex :: number) < (right.refrIndex :: number)
 end
 
+-- A master's index and a reference's own, when both are whole numbers below this, place a
+-- reference by one whole number a double holds: every one a plugin can hold is.
+local IndexLimit = 16777216
+
 -- References in the order tes3 writes them: persistent first, then the masters' by master and
 -- index, then the plugin's own by index. The package encoder writes them in this order too.
-function tes3conv.sortReferences(references: { Table }) table.sort(references, before) end
+-- Each reference's place is written as one number. A list whose places only rise, as a plugin's
+-- and a tes3conv document's do, is in order already; any other is sorted by its places at once.
+-- References that share a place, or whose master or index is no number a plugin holds, are
+-- compared pair by pair instead, which leaves ties in an order of its own.
+function tes3conv.sortReferences(references: { Table })
+  local count = #references
+  if count < 2 then return end
+
+  local places = buffer.create(count * 8)
+  local rising, last = true, -1
+
+  for index = 1, count do
+    local reference = references[index]
+    local kept = persistent(reference)
+    local master, own = reference.mastIndex, reference.refrIndex
+
+    if
+      type(master) ~= 'number'
+      or type(own) ~= 'number'
+      or master % 1 ~= 0
+      or own % 1 ~= 0
+      or master < 0
+      or own < 0
+      or master >= IndexLimit
+      or own >= IndexLimit
+    then
+      table.sort(references, before)
+      return
+    end
+
+    local group = if kept then 0 else 2 * IndexLimit * IndexLimit
+    local place = group + (if master == 0 then IndexLimit else master) * IndexLimit + own
+    buffer.writef64(places, (index - 1) * 8, place)
+
+    if place <= last then rising = false end
+
+    last = place
+  end
+
+  if rising then return end
+
+  local order = buffer.create(count * 4)
+  data.argsort(places, 'f64', 0, count, order)
+  local sorted: { Table } = table.create(count)
+  last = -1
+
+  for slot = 0, count - 1 do
+    local from = buffer.readu32(order, slot * 4)
+    local place = buffer.readf64(places, from * 8)
+
+    if place == last then
+      table.sort(references, before)
+      return
+    end
+
+    last = place
+    sorted[slot + 1] = references[from + 1]
+  end
+
+  table.move(sorted, 1, count, 1, references)
+end
 
 -- tes3conv sorts a plugin's records before it writes them (see `sort`).
 function tes3conv.sort(records: Records): Records
@@ -554,7 +619,7 @@ local function settled(cell: Table): Table
 
   if tidy then return cell end
 
-  table.sort(unique, before)
+  tes3conv.sortReferences(unique)
   local copy = table.clone(cell)
   copy.references = unique
   return copy
