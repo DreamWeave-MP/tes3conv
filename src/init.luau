@@ -93,6 +93,14 @@ local Escapes: { [string]: string } = {
   ['"'] = '"',
 }
 
+-- The powers of ten a number's digits can be over, from 10^1, each made by a multiplication a
+-- double does exactly.
+local Tens: { number } = {}
+
+for places = 1, 14 do
+  Tens[places] = (Tens[places - 1] or 1) * 10
+end
+
 local camelCache: { [string]: string } = {}
 
 -- omwaddon::symbol::camel_case: `_` before a lowercase letter becomes that letter uppercased,
@@ -220,14 +228,16 @@ local function parse(text: string, position: number, rawKeys: boolean): (Value, 
       return jess.null, position + 4
     end
 
-    -- A whole number of up to fifteen digits is worked out from its digits, exactly. Anything
-    -- else that starts a number is read as text, and so is what is looked for past the text's
-    -- end, where `position` is nil.
+    -- A number of up to fifteen digits, with a fraction or without, is worked out from its
+    -- digits: they and the power of ten they are over are whole numbers a double holds, so
+    -- the one division rounds as reading the text does. Anything else that starts a number is
+    -- read as text, and so is what is looked for past the text's end, where `position` is nil.
     if position and (byte == 45 or (byte >= 48 and byte <= 57)) then
       local negative = byte == 45
-      local at = if negative then position + 1 else position
+      local first = if negative then position + 1 else position
+      local at = first
       local digit = if negative then string.byte(text, at) else byte
-      local whole = 0
+      local whole, places = 0, 0
 
       while digit and digit >= 48 and digit <= 57 do
         whole = whole * 10 + (digit - 48)
@@ -235,11 +245,28 @@ local function parse(text: string, position: number, rawKeys: boolean): (Value, 
         digit = string.byte(text, at)
       end
 
-      local count = at - position - (if negative then 1 else 0)
-      local fraction = digit == 46 or digit == 101 or digit == 69 or digit == 45 or digit == 43
+      local count = at - first
 
-      if digit and not fraction and count > 0 and count <= 15 then
-        return if negative then -whole else whole, at
+      if digit == 46 and count > 0 then
+        local mark = at
+        at += 1
+        digit = string.byte(text, at)
+
+        while digit and digit >= 48 and digit <= 57 do
+          whole = whole * 10 + (digit - 48)
+          at += 1
+          digit = string.byte(text, at)
+        end
+
+        places = at - mark - 1
+        count = if places > 0 then count + places else 0
+      end
+
+      local longer = digit == 46 or digit == 101 or digit == 69 or digit == 45 or digit == 43
+
+      if digit and not longer and count > 0 and count <= 15 then
+        local magnitude = if places > 0 then whole / Tens[places] else whole
+        return if negative then -magnitude else magnitude, at
       end
     end
 
