@@ -58,6 +58,7 @@ goes by; one record's tables; and one chunk. Their output is byte for byte `enco
 ]]
 
 local Encode = require '@self/encode'
+local bytes = require '@dream/bytes'
 local tes3 = require '@self/records'
 local core = require '@tes3'
 
@@ -585,54 +586,56 @@ end
 
 -- Where each record of a document is: the offset of its `{`, and its length. The document is
 -- stepped through a window at a time, looking only at its strings and brackets: nothing is
--- read into tables, and no more than a window is held.
+-- read into tables, and no more than a window is held. Outside a string it is stepped through
+-- a byte at a time; a string, which a landscape's or a script's can be most of a window, is
+-- stepped over by where the next quote and the next backslash are, each looked for once.
 local function spans(document: Text): ({ number }, { number })
   local starts: { number }, lengths: { number } = {}, {}
   local depth, offset = 0, 0
   local quoted, escaped, closed = false, false, false
 
   while offset < document.size and not closed do
-    local window = document.read(offset, Window)
-    local position = 1
+    local window = buffer.fromstring(document.read(offset, Window))
+    local size = buffer.len(window)
+    local position = 0
+    local quote, slash = -1, -1
 
     -- A backslash that ended the last window escapes the character that starts this one.
     if escaped then
-      position = 2
+      position = 1
       escaped = false
     end
 
-    while position <= #window do
+    while position < size do
       if quoted then
-        local at = string.find(window, '["\\]', position)
-        if not at then break end
+        if quote < position then quote = bytes.find(window, '"', position) or size end
 
-        quoted = string.byte(window, at) == 92
-        escaped = quoted and at == #window
+        if slash < position then slash = bytes.find(window, '\\', position) or size end
+
+        local at = math.min(quote, slash)
+        if at == size then break end
+
+        quoted = at == slash
+        escaped = quoted and at == size - 1
         position = if quoted then at + 2 else at + 1
         continue
       end
 
-      local at = string.find(window, '["{}%[%]]', position)
+      local byte = buffer.readu8(window, position)
+      position += 1
 
-      -- Outside the records there is only the array's own punctuation.
-      if depth < 2 then
-        local between = string.sub(window, position, if at then at - 1 else #window)
-        local expected = if depth == 0 then '^%s*$' else '^[%s,]*$'
+      if byte ~= 34 and byte ~= 91 and byte ~= 93 and byte ~= 123 and byte ~= 125 then
+        -- Outside the records there is only the array's own punctuation.
+        if depth >= 2 or byte == 32 or (byte >= 9 and byte <= 13) then continue end
 
-        if not string.find(between, expected) then
-          error(
-            if depth == 0
-              then 'a tes3conv plugin is a JSON array of records'
-              else `the document has something that isn't a record where record {#starts + 1} would be`,
-            0
-          )
+        if depth == 0 then error('a tes3conv plugin is a JSON array of records', 0) end
+
+        if byte ~= 44 then
+          error(`the document has something that isn't a record where record {#starts + 1} would be`, 0)
         end
+
+        continue
       end
-
-      if not at then break end
-
-      local byte = string.byte(window, at)
-      position = at + 1
 
       if depth == 0 and byte ~= 91 then error('a tes3conv plugin is a JSON array of records', 0) end
 
@@ -644,7 +647,7 @@ local function spans(document: Text): ({ number }, { number })
         if depth == 1 then
           if byte ~= 123 then error(`record {#starts + 1} of the document isn't an object`, 0) end
 
-          table.insert(starts, offset + at - 1)
+          table.insert(starts, offset + position - 1)
         end
 
         depth += 1
@@ -652,7 +655,7 @@ local function spans(document: Text): ({ number }, { number })
         depth -= 1
 
         if depth == 1 then
-          lengths[#starts] = offset + at - starts[#starts]
+          lengths[#starts] = offset + position - starts[#starts]
         elseif depth <= 0 then
           closed = true
           break
@@ -660,9 +663,9 @@ local function spans(document: Text): ({ number }, { number })
       end
     end
 
-    offset += #window
+    offset += size
 
-    if #window == 0 then break end
+    if size == 0 then break end
   end
 
   if closed then return starts, lengths end
