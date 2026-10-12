@@ -564,21 +564,11 @@ end
 -- A plugin's records as `tes3conv plugin.esp plugin.json` reads them, sorted as it sorts them,
 -- and each record's bytes in the same order.
 function tes3conv.recordsWithBytes(plugin: core.Plugin): (Records, { string })
-  local records: Records, bytes: { string } = {}, {}
-
-  for index = 0, plugin:count() - 1 do
-    table.insert(records, recordAt(plugin, index))
-    table.insert(bytes, buffer.tostring(plugin:bytes(index)))
-  end
-
-  local sortedRecords: Records, sortedBytes: { string } = {}, {}
-
-  for position, from in tes3.sortPermutation(records) do
-    sortedRecords[position] = records[from]
-    sortedBytes[position] = bytes[from]
-  end
-
-  return sortedRecords, sortedBytes
+  local last = plugin:count() - 1
+  local records: Records = [for index in range(0, last) => recordAt(plugin, index)]
+  local stored: { string } = [for index in range(0, last) => buffer.tostring(plugin:bytes(index))]
+  local order = tes3.sortPermutation(records)
+  return [for from in order => records[from]], [for from in order => stored[from]]
 end
 
 function tes3conv.records(plugin: core.Plugin): Records return (tes3conv.recordsWithBytes(plugin)) end
@@ -641,13 +631,7 @@ end
 local function joined(chunks: { string }): string
   if #chunks == 1 then return chunks[1] end
 
-  local size = 0
-
-  for _, chunk in chunks do
-    size += #chunk
-  end
-
-  local whole = buffer.create(size)
+  local whole = buffer.create(sum[for chunk in chunks => #chunk])
   local position = 0
 
   for _, chunk in chunks do
