@@ -173,6 +173,73 @@ local function here(): string
   return string.match(path, '^(.*)/[^/]*$') or '.'
 end
 
+-- Numbers `tonumber` reads: whole ones and decimals either side of the fifteen digits a double
+-- holds, signs, zeros in front and behind, exponents, and the spellings JSON has none of.
+local Numbers = {
+  '0',
+  '-0',
+  '0.0',
+  '-0.0',
+  '00',
+  '007',
+  '-007',
+  '+5',
+  '1.',
+  '.5',
+  '-.5',
+  '1e5',
+  '1E-5',
+  '1.5e+3',
+  '-0e0',
+  '0.1',
+  '0.3',
+  '2.675',
+  '1.005',
+  '4.35',
+  '-1.5',
+  '0.30000000000000004',
+  '16777217',
+  '4294967296',
+  '-2147483648',
+  '123456789012345',
+  '999999999999999',
+  '1234567890123456',
+  '9007199254740993',
+  '0.00000000000001',
+  '0.000000000000001',
+  '0.0000000000000001',
+  '0.123456789012345',
+  '0.1234567890123456',
+  '1.00000000000000',
+  '1.000000000000000',
+  '9.99999999999999',
+  '9.999999999999999',
+  '1234567.89012345',
+  '12345678901234.5',
+  '123456789012345.0',
+  '3.4028235e+38',
+  '1.7976931348623157e308',
+  '5e-324',
+  '1e400',
+  '-1e400',
+}
+
+--- Whether two numbers are one double, bit for bit: a zero and its negative aren't.
+local function identical(left: number, right: number): boolean
+  return string.pack('<d', left) == string.pack('<d', right)
+end
+
+-- What serde_json writes for a character it escapes.
+local Escaped: { [string]: string } = {
+  ['"'] = '\\"',
+  ['\\'] = '\\\\',
+  ['\n'] = '\\n',
+  ['\t'] = '\\t',
+  ['\r'] = '\\r',
+  ['\1'] = '\\u0001',
+  ['\31'] = '\\u001f',
+}
+
 suite.describe('json', function()
   suite.it('reads any JSON value, keys camelCase', function()
     local value = tes3conv.json [[
@@ -204,6 +271,95 @@ suite.describe('json', function()
   suite.it('unescapes strings, hex digits after an escape included', function()
     expect(tes3conv.json [["a\"b\\c\/d\r\n\t\u00e9\u0416"]]).toBe 'a"b\\c/d\r\n\t\u{e9}\u{416}'
     expect(tes3conv.json [["\nface\tbed"]]).toBe '\nface\tbed'
+  end)
+
+  suite.it('reads a number as tonumber reads its text, to the last bit', function()
+    local random = 0x2545f491
+
+    local function pick(limit: number): number
+      random = bit32.bxor(random, bit32.lshift(random, 13))
+      random = bit32.bxor(random, bit32.rshift(random, 17))
+      random = bit32.bxor(random, bit32.lshift(random, 5))
+      return random % limit + 1
+    end
+
+    local function digits(count: number): string
+      local text = ''
+
+      for _ = 1, count do
+        text ..= if pick(4) == 1 then '0' else tostring(pick(10) - 1)
+      end
+
+      return text
+    end
+
+    local spellings = table.clone(Numbers)
+
+    for _ = 1, 6000 do
+      local sign = if pick(3) == 1 then '-' else ''
+      local whole, fraction = digits(pick(17)), digits(pick(17))
+      table.insert(spellings, sign .. whole)
+      table.insert(spellings, `{sign}{whole}.{fraction}`)
+      table.insert(spellings, `{sign}{whole}.{fraction}e{pick(40) - 20}`)
+    end
+
+    for _, spelling in spellings do
+      local expected = tonumber(spelling) :: number
+      local alone = tes3conv.json(`{spelling} `) :: number
+      local listed = tes3conv.json(`[{spelling},{spelling}\n]`) :: Record
+      local keyed = tes3conv.json(`\{"first":{spelling},"second": {spelling}}`) :: Record
+
+      for _, got in { alone, listed[1], listed[2], keyed.first, keyed.second } do
+        if not identical(got, expected) then error(`{spelling} was read as {got}`, 0) end
+      end
+    end
+  end)
+
+  suite.it('steps over any whitespace between values, and none', function()
+    local expected = { list = { 1, 2, 3 }, empty = {}, name = 'crate' }
+    expect(tes3conv.json '\t{\r\n\t"list"\t:\r\n[ 1 ,\t2\r\n,\n\n  3 ]\r\n,"empty":{}\f,\v"name" : "crate"\n}').toEqual(expected)
+    expect(tes3conv.json '{"list":[1,2,3],"empty":{},"name":"crate"}').toEqual(expected)
+  end)
+
+  suite.it('reads strings with escapes and without, in any order, as keys and as values', function()
+    local pieces = { 'crate', ' ', '', 'ex_common_door_01', '\u{e9}', '"', '\\', '\\', '\n', '\t', '\r', '\1', '\31', '/' }
+    local random = 0x1d872b41
+
+    local function pick(limit: number): number
+      random = bit32.bxor(random, bit32.lshift(random, 13))
+      random = bit32.bxor(random, bit32.rshift(random, 17))
+      random = bit32.bxor(random, bit32.lshift(random, 5))
+      return random % limit + 1
+    end
+
+    local function text(): string
+      local made = ''
+
+      -- Most strings of a document have no escape in them, and here too.
+      for _ = 1, pick(4) - 1 do
+        made ..= pieces[if pick(3) == 1 then pick(#pieces) else pick(4)]
+      end
+
+      return made
+    end
+
+    local function quoted(plain: string): string return `"{(string.gsub(plain, '[%c"\\]', Escaped))}"` end
+
+    for _ = 1, 400 do
+      local values: { string }, keys: { string } = {}, {}
+      local expected: { [string]: string } = {}
+
+      for index = 1, pick(9) do
+        values[index] = text()
+        keys[index] = `{index}{text()}`
+        expected[keys[index]] = values[index]
+      end
+
+      local listed = [for value in values => quoted(value)]
+      local fields = [for index, value in enumerate(values) => `{quoted(keys[index])}:{quoted(value)}`]
+      expect(tes3conv.json(`[{table.concat(listed, ',')}]`)).toEqual(values)
+      expect(tes3conv.json(`\{{table.concat(fields, ', ')}}`, true)).toEqual(expected)
+    end
   end)
 end)
 
