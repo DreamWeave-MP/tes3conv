@@ -120,8 +120,40 @@ setmetatable(pending, { __mode = 'k' })
 local function parse(text: string, position: number, rawKeys: boolean): (Value, number)
   local value: (position: number) -> (Value, number)
 
+  -- The first backslash from `slashFrom` on, once one has been looked for there: a string that
+  -- closes before it is the text between its quotes, and most of a document's are.
+  local slashFrom, slash = 1, 0
+
+  --- `string.find(text, '%S', position)`: where the text goes on after its whitespace, which
+  --- between two values is spaces and line ends, found without a pattern.
+  local function skip(position: number): number
+    if not position then return string.find(text, '%S', position) :: number end
+
+    local byte = string.byte(text, position)
+
+    while byte == 32 or byte == 10 do
+      position += 1
+      byte = string.byte(text, position)
+    end
+
+    if byte and byte > 32 then return position end
+
+    return string.find(text, '%S', position) :: number
+  end
+
   local function readString(position: number): (string, number)
     local first = position + 1
+    local quote = string.find(text, '"', first, true)
+
+    if quote then
+      if first < slashFrom or first > slash then
+        slashFrom = first
+        slash = string.find(text, '\\', first, true) or math.huge
+      end
+
+      if slash > quote then return string.sub(text, first, quote - 1), quote + 1 end
+    end
+
     local stop = string.find(text, '["\\]', first) :: number
 
     if string.byte(text, stop) == 34 then return string.sub(text, first, stop - 1), stop + 1 end
@@ -135,31 +167,35 @@ local function parse(text: string, position: number, rawKeys: boolean): (Value, 
   end
 
   function value(position: number): (Value, number)
-    position = string.find(text, '%S', position) :: number
+    position = skip(position)
     local byte = string.byte(text, position)
 
     if byte == 123 then
       local object: Table = {}
-      position = string.find(text, '%S', position + 1) :: number
+      position = skip(position + 1)
 
       if string.byte(text, position) == 125 then return object, position + 1 end
 
       while true do
         local key: string, item: Value
         key, position = readString(position)
-        position = string.find(text, ':', position, true) :: number
+
+        if string.byte(text, position) ~= 58 then
+          position = string.find(text, ':', position, true) :: number
+        end
+
         item, position = value(position + 1)
         object[if rawKeys then key else camel(key)] = item
-        position = string.find(text, '%S', position) :: number
+        position = skip(position)
 
         if string.byte(text, position) ~= 44 then return object, position + 1 end
 
-        position = string.find(text, '%S', position + 1) :: number
+        position = skip(position + 1)
       end
     elseif byte == 91 then
       local list: Table = {}
       local count = 0
-      position = string.find(text, '%S', position + 1) :: number
+      position = skip(position + 1)
 
       if string.byte(text, position) == 93 then return list, position + 1 end
 
@@ -168,7 +204,7 @@ local function parse(text: string, position: number, rawKeys: boolean): (Value, 
         item, position = value(position)
         count += 1
         list[count] = item
-        position = string.find(text, '%S', position) :: number
+        position = skip(position)
 
         if string.byte(text, position) ~= 44 then return list, position + 1 end
 
@@ -182,6 +218,29 @@ local function parse(text: string, position: number, rawKeys: boolean): (Value, 
       return false, position + 5
     elseif byte == 110 then
       return jess.null, position + 4
+    end
+
+    -- A whole number of up to fifteen digits is worked out from its digits, exactly. Anything
+    -- else that starts a number is read as text, and so is what is looked for past the text's
+    -- end, where `position` is nil.
+    if position and (byte == 45 or (byte >= 48 and byte <= 57)) then
+      local negative = byte == 45
+      local at = if negative then position + 1 else position
+      local digit = if negative then string.byte(text, at) else byte
+      local whole = 0
+
+      while digit and digit >= 48 and digit <= 57 do
+        whole = whole * 10 + (digit - 48)
+        at += 1
+        digit = string.byte(text, at)
+      end
+
+      local count = at - position - (if negative then 1 else 0)
+      local fraction = digit == 46 or digit == 101 or digit == 69 or digit == 45 or digit == 43
+
+      if digit and not fraction and count > 0 and count <= 15 then
+        return if negative then -whole else whole, at
+      end
     end
 
     local stop = string.find(text, '[^-+.%deE]', position) :: number
