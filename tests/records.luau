@@ -27,6 +27,114 @@ local function cell(
   }
 end
 
+--- The positions of `list` in tes3's order, found by comparing its records pair by pair: by
+--- type, then by the number a texture, an effect, or a skill sorts by, then by id, then by place.
+local function compared(list: records.Records): { number }
+  type Entry = { order: number, hint: number, id: string, position: number }
+  local entries: { Entry } = {}
+
+  for position, record in list do
+    local kind = record.type :: string
+    local order = records.SortOrder[kind]
+    local hint, id = 0, ''
+
+    if kind == 'LandscapeTexture' then
+      hint = tonumber(record.index) or 0
+    elseif kind == 'MagicEffect' then
+      hint = records.EffectIndex[records.string(record.effectId)] or -1
+    elseif kind == 'Skill' then
+      hint = records.SkillIndex[records.string(record.skillId)] or -1
+    elseif order ~= 37 and order ~= 39 and kind ~= 'Header' then
+      id = records.string(record.id)
+    end
+
+    entries[position] = { order = order or 41, hint = hint, id = id, position = position }
+  end
+
+  table.sort(entries, function(left, right)
+    if left.order ~= right.order then return left.order < right.order end
+
+    if left.hint ~= right.hint then return left.hint < right.hint end
+
+    if left.id ~= right.id then return left.id < right.id end
+
+    return left.position < right.position
+  end)
+
+  local order: { number } = {}
+
+  for position, entry in entries do
+    order[position] = entry.position
+  end
+
+  return order
+end
+
+local Kinds = {
+  'Static',
+  'Npc',
+  'Door',
+  'Cell',
+  'Landscape',
+  'PathGrid',
+  'Dialogue',
+  'DialogueInfo',
+  'SoundGen',
+  'Header',
+  'Starship',
+  'GameSetting',
+}
+
+local Effects = { 'Levitate', 'WaterBreathing', 'Burden', 'Summon05', 'None', 'Nope' }
+local Skills = { 'Sneak', 'Block', 'HandToHand', 'None', 'Nope' }
+
+--- Indices no texture should have, and a few it could: fractions, negatives, numbers as text,
+--- and numbers past any count of textures.
+local Strange: { records.Value } = { 2.5, -3, '7', 1e12, 2097151, 2097152, -1, -2, 0.5, math.huge, -math.huge }
+
+--- `count` records of every kind the order tells apart, many with an id, an index, or an effect
+--- another has, in no order. `strange` gives textures the indices above as well.
+local function mixed(count: number, strange: boolean): records.Records
+  local random = 0x2545f491
+
+  local function pick(limit: number): number
+    random = bit32.bxor(random, bit32.lshift(random, 13))
+    random = bit32.bxor(random, bit32.rshift(random, 17))
+    random = bit32.bxor(random, bit32.lshift(random, 5))
+    return random % limit + 1
+  end
+
+  local list: records.Records = {}
+
+  for position = 1, count do
+    local roll = pick(20)
+    local record: Record
+
+    if roll == 1 then
+      local index: records.Value = pick(40) - 1
+      if strange and pick(2) == 1 then index = Strange[pick(#Strange)] end
+
+      record = { type = 'LandscapeTexture', id = `texture {pick(30)}`, index = index }
+    elseif roll == 2 then
+      record = { type = 'MagicEffect', effectId = Effects[pick(#Effects)] }
+    elseif roll == 3 then
+      record = { type = 'Skill', skillId = Skills[pick(#Skills)] }
+    elseif roll == 4 then
+      record = { type = 'Static', id = pick(9) }
+    elseif roll == 5 then
+      record = { id = `untyped {pick(5)}` }
+    elseif roll == 6 then
+      record = { type = Kinds[pick(#Kinds)], id = `ex_common_door_{pick(4)}\0{pick(3)}` }
+    else
+      record = { type = Kinds[pick(#Kinds)], id = `ex_common_{pick(count // 3 + 1)}` }
+    end
+
+    list[position] = record
+  end
+
+  return list
+end
+
 --- What tells a record apart in a sorted list: the id or name it goes by, or else its type.
 local function labels(list: records.Records): { string }
   local out = {}
@@ -252,6 +360,37 @@ suite.describe('sorting', function()
     expect(records.sortPermutation(list)).toEqual { 2, 3, 1 }
     expect(list).toEqual { beta, header, alpha }
     expect(records.sortPermutation {}).toEqual {}
+  end)
+
+  suite.it('orders a long list as comparing its records pair by pair does', function()
+    local list = mixed(3000, false)
+    local order = records.sortPermutation(list)
+    expect(order).toEqual(compared(list))
+
+    local sorted = table.clone(list)
+    records.sortObjects(sorted)
+
+    for position, from in order do
+      if sorted[position] ~= list[from] then error(`place {position} isn't record {from}`, 0) end
+    end
+  end)
+
+  suite.it('orders textures whose indices aren\'t small whole numbers the same way', function()
+    for _, count in { 1, 2, 3, 50, 800 } do
+      local list = mixed(count, true)
+      expect(records.sortPermutation(list)).toEqual(compared(list))
+    end
+  end)
+
+  suite.it('orders ids byte by byte, a shorter one before the longer it starts', function()
+    local list: records.Records = {}
+
+    for _, id in { 'b', 'a\0', 'a', '', 'ab', 'a\255', 'A', 'a b', 'a\0b', '\255', 'aa', 'a' } do
+      table.insert(list, typed('Static', id))
+    end
+
+    expect(records.sortPermutation(list)).toEqual(compared(list))
+    expect(records.sortPermutation(list)).toEqual { 4, 7, 3, 12, 2, 9, 8, 11, 5, 6, 1, 10 }
   end)
 end)
 

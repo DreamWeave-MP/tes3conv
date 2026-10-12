@@ -380,6 +380,109 @@ suite.describe('references', function()
       'own 2',
     }
   end)
+
+  --- Whether `left` goes before `right`: persistent first, then a master's before the plugin's
+  --- own, by master and then by index.
+  local function before(left: Record, right: Record): boolean
+    local leftKept, rightKept = tes3conv.isPersistent(left), tes3conv.isPersistent(right)
+    if leftKept ~= rightKept then return leftKept end
+
+    local leftMaster = if left.mastIndex == 0 then math.huge else left.mastIndex
+    local rightMaster = if right.mastIndex == 0 then math.huge else right.mastIndex
+    if leftMaster ~= rightMaster then return leftMaster < rightMaster end
+
+    return left.refrIndex < right.refrIndex
+  end
+
+  local random = 0x2545f491
+
+  local function pick(limit: number): number
+    random = bit32.bxor(random, bit32.lshift(random, 13))
+    random = bit32.bxor(random, bit32.rshift(random, 17))
+    random = bit32.bxor(random, bit32.lshift(random, 5))
+    return random % limit + 1
+  end
+
+  --- `count` references, no two with one master and index unless `twins`, in no order. With
+  --- `strange`, some have a master or an index no plugin holds.
+  local function scattered(count: number, twins: boolean, strange: boolean): { Record }
+    local odd = { 1.5, -1, 16777216, 16777215, 1099511627776, -0.25, 33554432 }
+    local list: { Record } = {}
+
+    for position = 1, count do
+      local fields: Record = {
+        id = `reference {position}`,
+        mastIndex = pick(4) - 1,
+        refrIndex = if twins then pick(count // 2 + 1) else position,
+      }
+
+      if pick(3) == 1 then fields.temporary = false end
+
+      if pick(9) == 1 then fields.movedCell = { 1, 2 } end
+
+      if pick(9) == 1 then fields.destination = { cell = 'Hangar' } end
+
+      if strange and pick(4) == 1 then fields.mastIndex = odd[pick(#odd)] end
+
+      if strange and pick(4) == 1 then fields.refrIndex = odd[pick(#odd)] + position end
+
+      list[position] = reference(fields)
+    end
+
+    for position = count, 2, -1 do
+      local other = pick(position)
+      list[position], list[other] = list[other], list[position]
+    end
+
+    return list
+  end
+
+  --- Holds `sortReferences` to what comparing the list pair by pair makes of it.
+  local function held(list: { Record })
+    local compared = table.clone(list)
+    table.sort(compared, before)
+    local sorted = table.clone(list)
+    tes3conv.sortReferences(sorted)
+    expect(ids(sorted)).toEqual(ids(compared))
+
+    -- And again from the order that came to: left as it is, unless two references tie.
+    local again, expected = table.clone(compared), table.clone(compared)
+    table.sort(expected, before)
+    tes3conv.sortReferences(again)
+    expect(ids(again)).toEqual(ids(expected))
+  end
+
+  suite.it('sorts a list of any length as comparing its references pair by pair does', function()
+    for _, count in { 0, 1, 2, 3, 7, 16, 17, 100, 700, 5000 } do
+      held(scattered(count, false, false))
+    end
+  end)
+
+  suite.it('sorts a list turned around', function()
+    local list = scattered(300, false, false)
+    table.sort(list, before)
+    local turned: { Record } = {}
+
+    for position = #list, 1, -1 do
+      table.insert(turned, list[position])
+    end
+
+    tes3conv.sortReferences(turned)
+    expect(ids(turned)).toEqual(ids(list))
+  end)
+
+  suite.it('sorts references that share a master and index as comparing them does', function()
+    for _, count in { 2, 3, 16, 100, 700 } do
+      held(scattered(count, true, false))
+    end
+  end)
+
+  suite.it('sorts references with a master or an index no plugin holds as comparing them does', function()
+    for _, count in { 2, 3, 16, 100, 700 } do
+      held(scattered(count, false, true))
+      held(scattered(count, true, true))
+    end
+  end)
 end)
 
 suite.describe('plugins', function()
