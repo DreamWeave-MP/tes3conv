@@ -1,0 +1,371 @@
+--!strict
+-- tes3conv, timed from Luau: a document read into record tables, record tables written as a
+-- document, both conversions held and streamed, and the orders tes3conv puts records and
+-- references in. On `@tes3`'s every-type plugin and its golden documents, and on a cell and a
+-- record list the size a master's are. Run by `jess run --capability filesystem.read --package .
+-- --package-path .. bench/bench.luau [filter]`, on a release build.
+local core = require '@tes3'
+local records = require '@tes3conv/records'
+local tes3conv = require '@tes3conv'
+
+-- A build without the verified toolchain runs Luau slower than a release does, so a number from
+-- one says nothing about what ships.
+if not jess.bench.verified then
+  error('tes3conv bench: this jess was built without the verified toolchain: measure on a release build', 0)
+end
+
+type Record = records.Record
+type Records = records.Records
+
+--- A filter on the workload names; none runs them all.
+local filter: string? = ...
+local only = if filter and filter ~= '' then filter else nil
+
+local function median(samples: { number }): number
+  table.sort(samples)
+  return samples[(#samples + 1) // 2]
+end
+
+-- A full collection, run between batches, so one batch's garbage isn't the next one's collection.
+local collect = jess.bench.collect
+
+--- Seconds per call of `body`: warmed up, then the median of seven batches of a size that takes
+--- about a tenth of a second. Every call has to return `expected`, what the work comes to.
+local function measure(name: string, expected: number, body: () -> number): number
+  local function checked()
+    local got = body()
+    if got ~= expected then error(`{name}: expected {expected}, got {got}`, 0) end
+  end
+
+  collect()
+  checked()
+  local start = os.clock()
+  checked()
+  local once = math.max(os.clock() - start, 1e-7)
+  local iterations = math.max(1, math.floor(0.1 / once))
+  local samples = {}
+
+  for batch = 1, 7 do
+    collect()
+    start = os.clock()
+
+    for _ = 1, iterations do
+      checked()
+    end
+
+    samples[batch] = (os.clock() - start) / iterations
+  end
+
+  return median(samples)
+end
+
+--- Times `body`, and prints its name and its seconds per call.
+local function workload(name: string, expected: number, body: () -> number)
+  if only and not string.find(name, only, 1, true) then return end
+
+  print(`{name}\t{measure(name, expected, body)}`)
+end
+
+--- Where this file is, from its chunk name.
+local function here(): string
+  local source = debug.info(1, 's')
+  local path = if string.sub(source, 1, 1) == '@' or string.sub(source, 1, 1) == '='
+    then string.sub(source, 2)
+    else source
+  return string.match(path, '^(.*)/[^/]*$') or '.'
+end
+
+local function file(name: string): string
+  return buffer.tostring(assert(jess.fs.readBuffer(`{here()}/../tests/{name}`), `{name} is missing`))
+end
+
+local random = 0x2545f491
+
+local function nextRandom(): number
+  random = bit32.bxor(random, bit32.lshift(random, 13))
+  random = bit32.bxor(random, bit32.rshift(random, 17))
+  random = bit32.bxor(random, bit32.lshift(random, 5))
+  return random
+end
+
+local function shuffle<Item>(items: { Item })
+  for index = #items, 2, -1 do
+    local other = nextRandom() % index + 1
+    items[index], items[other] = items[other], items[index]
+  end
+end
+
+local Objects = { 'ex_common_door_01', 'flora_tree_ai_04', 'terrain_rock_wg_10', 'light_com_torch', 'barrel_01' }
+
+--- A cell's reference as `decode` gives one.
+local function reference(master: number, index: number, temporary: boolean): Record
+  local made: Record = {
+    mastIndex = master,
+    refrIndex = index,
+    id = Objects[nextRandom() % #Objects + 1],
+    translation = {
+      (nextRandom() % 1000000) / 8 - 60000,
+      (nextRandom() % 1000000) / 8 - 60000,
+      (nextRandom() % 40000) / 16,
+    },
+    rotation = { 0, 0, (nextRandom() % 6283) / 1000 },
+  }
+
+  if temporary then made.temporary = true end
+
+  if nextRandom() % 4 == 0 then made.scale = (nextRandom() % 150 + 50) / 100 end
+
+  return made
+end
+
+--- `count` references in the order tes3conv writes a cell's: the persistent ones, then two
+--- masters' by index, then the plugin's own.
+local function references(count: number): { Record }
+  local made: { Record } = {}
+  local quarter = count // 4
+
+  for index = 1, quarter do
+    made[index] = reference(1, index * 3, false)
+  end
+
+  for index = 1, quarter do
+    made[quarter + index] = reference(1, 100000 + index * 5, true)
+  end
+
+  for index = 1, quarter do
+    made[2 * quarter + index] = reference(2, index * 7, true)
+  end
+
+  for index = 1, count - 3 * quarter do
+    made[3 * quarter + index] = reference(0, index, true)
+  end
+
+  return made
+end
+
+local Header: Record = {
+  type = 'Header',
+  flags = '',
+  version = 1.3,
+  fileType = 'Esp',
+  author = '',
+  description = '',
+  numObjects = 1,
+  masters = { { 'Morrowind.esm', 79837557 }, { 'Tribunal.esm', 4565686 } },
+}
+
+local function cell(count: number): Record
+  return {
+    type = 'Cell',
+    flags = '',
+    name = 'Bench, Hall',
+    data = { flags = 'IS_INTERIOR', grid = { 0, 0 } },
+    references = references(count),
+  }
+end
+
+--- The types a master is mostly made of by count, each keyed by its id.
+local Kinds = { 'Static', 'Door', 'MiscItem', 'Weapon', 'Container', 'Creature', 'Light', 'Npc', 'Armor', 'Book' }
+
+--- `count` records with only what places them in tes3conv's order, in no order: the header, the
+--- kinds above, and the ones ordered by a number or by nothing they hold.
+local function keyed(count: number): Records
+  local made: Records = { { type = 'Header', ordinal = 1 } }
+
+  for ordinal = 2, count do
+    local pick = nextRandom() % 16
+    local record: Record
+
+    if pick == 0 then
+      record = { type = 'LandscapeTexture', index = nextRandom() % 400 }
+    elseif pick == 1 then
+      record = { type = 'Cell', name = `cell {ordinal}` }
+    elseif pick == 2 then
+      record = { type = 'DialogueInfo', id = `{nextRandom()}` }
+    else
+      record = { type = Kinds[nextRandom() % #Kinds + 1], id = `object_{nextRandom() % 100000}_{ordinal}` }
+    end
+
+    record.ordinal = ordinal
+    made[ordinal] = record
+  end
+
+  return made
+end
+
+--- What an order of records comes to: each one's place times the place it was made in.
+local function placed(sorted: Records): number
+  local total = 0
+
+  for position, record in sorted do
+    total = (total + position * (record.ordinal :: number)) % 4294967296
+  end
+
+  return total
+end
+
+--- What an order of references comes to, the same way.
+local function arranged(sorted: { Record }): number
+  local total = 0
+
+  for position, item in sorted do
+    total = (total + position * ((item.mastIndex :: number) * 16777216 + (item.refrIndex :: number))) % 4294967296
+  end
+
+  return total
+end
+
+local Compact = { compact = true }
+local Lazy = { lazy = { Cell = true, Landscape = true, PathGrid = true, Dialogue = true, DialogueInfo = true } }
+
+local pluginBytes = file 'assets/all_types.esp'
+local document = file 'golden/all_types.json'
+local tight = file 'golden/all_types.compact.json'
+local plugin = core.open(pluginBytes)
+local decoded = tes3conv.decode(document)
+
+local hall: Records = { Header, cell(4096) }
+local hallDocument = tes3conv.encode(hall)
+local hallTight = tes3conv.encode(hall, Compact)
+
+local ordered = (hall[2].references :: unknown) :: { Record }
+local shuffled = table.clone(ordered)
+shuffle(shuffled)
+
+--- 256 cells' worth of references, sixteen to a cell, in order and not.
+local smallOrdered: { { Record } }, smallShuffled: { { Record } } = {}, {}
+
+for index = 1, 256 do
+  smallOrdered[index] = references(16)
+  smallShuffled[index] = table.clone(smallOrdered[index])
+  shuffle(smallShuffled[index])
+end
+
+local master = keyed(8192)
+
+local written = 0
+
+local function counting(_chunk: buffer, length: number) written += length end
+
+workload('decode all_types.json', 80, function() return #tes3conv.decode(document) end)
+
+workload('decode all_types.compact.json', 80, function() return #tes3conv.decode(tight) end)
+
+workload('decode all_types.json, cells and dialogue lazy', 80, function() return #tes3conv.decode(document, Lazy) end)
+
+workload('decode a cell of 4096 references', 4096, function()
+  local read = tes3conv.decode(hallDocument)
+  return #((read[2].references :: unknown) :: { Record })
+end)
+
+workload('decode a cell of 4096 references, compact', 4096, function()
+  local read = tes3conv.decode(hallTight)
+  return #((read[2].references :: unknown) :: { Record })
+end)
+
+workload('encode all_types', #document, function() return #tes3conv.encode(decoded) end)
+
+workload('encode all_types, compact', #tight, function() return #tes3conv.encode(decoded, Compact) end)
+
+workload('encode a cell of 4096 references', #hallDocument, function() return #tes3conv.encode(hall) end)
+
+workload(
+  'encode a cell of 4096 references, compact',
+  #hallTight,
+  function() return #tes3conv.encode(hall, Compact) end
+)
+
+workload('records of all_types.esp', 80, function() return #tes3conv.records(plugin) end)
+
+workload('transcribe all_types.esp', #document, function() return #tes3conv.transcribe(plugin) end)
+
+workload('transcribeTo from all_types.json', #document, function()
+  written = 0
+  tes3conv.transcribeTo(document, counting)
+  return written
+end)
+
+workload('transcribeTo from a cell of 4096 references', #hallDocument, function()
+  written = 0
+  tes3conv.transcribeTo(hallDocument, counting)
+  return written
+end)
+
+workload('compile all_types', #pluginBytes, function()
+  return buffer.len(tes3conv.compile(decoded, 'bench.esp'):save())
+end)
+
+workload('compile a cell of 4096 references', 2, function() return tes3conv.compile(hall, 'bench.esp'):count() end)
+
+workload('compileTo from all_types.json', #pluginBytes, function()
+  written = 0
+  tes3conv.compileTo(document, counting, 'bench.esp')
+  return written
+end)
+
+workload('compileTo from all_types.esp', #pluginBytes, function()
+  written = 0
+  tes3conv.compileTo(plugin, counting, 'bench.esp')
+  return written
+end)
+
+workload('compileTo from a cell of 4096 references', 290685, function()
+  written = 0
+  tes3conv.compileTo(hallDocument, counting, 'bench.esp')
+  return written
+end)
+
+workload('sort 8192 records', 4137234233, function() return placed(tes3conv.sort(master)) end)
+
+workload('sortPermutation of 8192 records', 8192, function() return #records.sortPermutation(master) end)
+
+workload('sortReferences, 4096 in order', 3096616960, function()
+  local list = table.clone(ordered)
+  tes3conv.sortReferences(list)
+  return arranged(list)
+end)
+
+workload('sortReferences, 4096 shuffled', 3096616960, function()
+  local list = table.clone(shuffled)
+  tes3conv.sortReferences(list)
+  return arranged(list)
+end)
+
+workload('sortReferences, 256 lists of 16 in order', 516062023680, function()
+  local total = 0
+
+  for _, small in smallOrdered do
+    local list = table.clone(small)
+    tes3conv.sortReferences(list)
+    total += arranged(list)
+  end
+
+  return total
+end)
+
+workload('sortReferences, 256 lists of 16 shuffled', 516062023680, function()
+  local total = 0
+
+  for _, small in smallShuffled do
+    local list = table.clone(small)
+    tes3conv.sortReferences(list)
+    total += arranged(list)
+  end
+
+  return total
+end)
+
+workload('deepCopy and equal over all_types', 80, function()
+  local same = 0
+
+  for _, record in decoded do
+    if records.equal(record, records.deepCopy(record)) then same += 1 end
+  end
+
+  return same
+end)
+
+workload('replaceNoCase over all_types.json', 123, function()
+  local _, count = records.replaceNoCase(document, '"TYPE"', '"kind"')
+  return count
+end)
