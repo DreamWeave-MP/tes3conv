@@ -105,7 +105,7 @@ end
 --- Why the request can't be carried out, or nil when nothing known before converting stands in
 --- its way. No file is read and none is written.
 local function check(request: ConvertRequest): string?
-  local input, output = request.input, request.output
+  local {input, output} = request
 
   if not formatOf(input) then
     return `'{input}' isn't a file tes3conv reads: it reads {Extensions} files`
@@ -193,7 +193,7 @@ local function convert(request: ConvertRequest): ConvertResult
   local refusal = check(request)
   if refusal then error(refusal, 0) end
 
-  local input, output = request.input, request.output
+  local {input, output} = request
   local from, kind = source(input)
   local to: Format = if output then formatOf(output) :: Format else 'json'
   local writing = output ~= nil and not request.dryRun

@@ -615,7 +615,7 @@ local write: (plan: Plan, value: Value, depth: number) -> ()
 
 --- Adds the fields of `plan` that `value` has, after the `type` a tagged value starts with.
 local function fields(plan: Plan, value: Table, depth: number, tag: string?)
-  local first, rest = plan.first, plan.rest
+  local {first, rest} = plan
   if not compact then
     first, rest = prefixes(plan, depth)
   end
