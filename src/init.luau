@@ -573,13 +573,74 @@ end
 
 function tes3conv.records(plugin: core.Plugin): Records return (tes3conv.recordsWithBytes(plugin)) end
 
+--- Whether a list of references is one tes3conv would hold as it stands: in its order, no two
+--- with one master and index. That is told from their places alone when they only rise, as a
+--- plugin's do: two references with one master and index are then a persistent one and one
+--- that isn't, found by walking the two runs side by side. False, too, for a table that isn't a
+--- list and for a master or an index no plugin holds, which `settled` looks at one by one.
+local function orderly(references: { Table }): boolean
+  local count = #references
+  local keys = buffer.create(count * 8)
+  local seen, kept, last = 0, count, -1
+
+  for index, reference in references do
+    seen += 1
+    if index ~= seen or seen > count then return false end
+
+    local master, own = reference.mastIndex, reference.refrIndex
+
+    if
+      type(master) ~= 'number'
+      or type(own) ~= 'number'
+      or master % 1 ~= 0
+      or own % 1 ~= 0
+      or master < 0
+      or own < 0
+      or master >= IndexLimit
+      or own >= IndexLimit
+    then
+      return false
+    end
+
+    local key = (if master == 0 then IndexLimit else master) * IndexLimit + own
+    local place = key
+
+    if not persistent(reference) then
+      place += 2 * IndexLimit * IndexLimit
+      kept = math.min(kept, seen - 1)
+    end
+
+    if place <= last then return false end
+
+    last = place
+    buffer.writef64(keys, (seen - 1) * 8, key)
+  end
+
+  if seen ~= count then return false end
+
+  local left, right = 0, kept
+
+  while left < kept and right < count do
+    local resident, visitor = buffer.readf64(keys, left * 8), buffer.readf64(keys, right * 8)
+    if resident == visitor then return false end
+
+    if resident < visitor then
+      left += 1
+    else
+      right += 1
+    end
+  end
+
+  return true
+end
+
 -- A cell as tes3conv holds it once read: its references keyed by master and index, so the last
 -- given with a pair is the one kept, in the order it writes them. The cell itself when its
 -- references already are, as a plugin's are.
 local function settled(cell: Table): Table
   local references = cell.references :: { Table }?
 
-  if not references then return cell end
+  if not references or orderly(references) then return cell end
 
   local unique: { Table } = {}
   local positions: { [number]: number } = {}
