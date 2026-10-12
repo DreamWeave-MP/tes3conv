@@ -57,11 +57,8 @@ local function blob(name: string): Field return field(name, Blob) end
 
 --- A struct of the fields given, in order: a name alone is a plain field.
 local function struct(members: { string | Field }): Node
-  local fields: { Field } = {}
-
-  for _, member in members do
-    table.insert(fields, if type(member) == 'string' then field(member, Plain) else member)
-  end
+  local fields: { Field } =
+    [for member in members => if type(member) == 'string' then field(member, Plain) else member]
 
   return table.freeze { kind = 'struct' :: 'struct', fields = table.freeze(fields) }
 end
