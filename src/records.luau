@@ -3,6 +3,8 @@
 -- TES3 record tables as tes3conv spells them, with jess's camelCase field names: the record
 -- semantics the Morrowind tools ported from Rust share. Exported as `@tes3conv/records`.
 
+local data = require '@dream/data'
+
 export type Key = string | number
 export type Value = boolean | number | string | JessNull | Table
 export type Table = { [Key]: Value }
@@ -383,18 +385,18 @@ end
 -- Cells, landscape, and path grids keep their order among themselves, as topics and their
 -- INFOs do. The sort is stable.
 function tes3.sortObjects(records: Records)
-  local permutation = tes3.sortPermutation(records)
-  local sorted = {}
-
-  for position, from in permutation do
-    sorted[position] = records[from]
-  end
-
+  local sorted = [for from in tes3.sortPermutation(records) => records[from]]
   table.move(sorted, 1, #sorted, 1, records)
 end
 
--- The positions of `records` in `sortObjects` order.
-function tes3.sortPermutation(records: Records): { number }
+-- What one number places a record by, each part a whole number the next can't reach: its type's
+-- place in the order, then the number a texture, an effect, or a skill sorts by, then where its
+-- id falls among the ids. Together they stay below 2^53, where a double holds every whole number.
+local HintLimit, HintSpan, RankSpan = 2097152, 4194304, 16777216
+
+--- The positions of `records` in `sortObjects` order, found by comparing them pair by pair:
+--- any table's, whatever its records hold.
+local function comparedPermutation(records: Records): { number }
   type Entry = { order: number, hint: number, id: string, position: number }
   local entries: { Entry } = {}
 
@@ -437,6 +439,72 @@ function tes3.sortPermutation(records: Records): { number }
   end
 
   return permutation
+end
+
+-- The positions of `records` in `sortObjects` order. Each record's place is written as one
+-- number, the ids having been put in order among themselves first, and the numbers are sorted
+-- at once, records with the same one staying in their order. A table that isn't a list, or a
+-- texture whose index isn't a small whole number, is compared pair by pair instead.
+function tes3.sortPermutation(records: Records): { number }
+  local size = #records
+  if size >= RankSpan then return comparedPermutation(records) end
+
+  local keys = buffer.create(size * 8)
+  local ids: { string } = table.create(size)
+  local ranks: { [string]: number } = {}
+  local distinct: { string } = {}
+  local count = 0
+
+  for position, record in records do
+    local kind = record.type :: string
+    local order = SortOrder[kind]
+    local hint, id = 0, ''
+
+    if kind == 'LandscapeTexture' then
+      hint = tonumber(record.index) or 0
+    elseif kind == 'MagicEffect' then
+      hint = EffectIndex[tes3.string(record.effectId)] or -1
+    elseif kind == 'Skill' then
+      hint = SkillIndex[tes3.string(record.skillId)] or -1
+    elseif order ~= 37 and order ~= 39 and kind ~= 'Header' then
+      id = tes3.string(record.id)
+    end
+
+    count += 1
+
+    if position ~= count or count > size or hint % 1 ~= 0 or hint < -1 or hint >= HintLimit then
+      return comparedPermutation(records)
+    end
+
+    buffer.writef64(keys, (count - 1) * 8, ((order or 41) * HintSpan + hint + 1) * RankSpan)
+    ids[count] = id
+
+    if id ~= '' and not ranks[id] then
+      ranks[id] = 0
+      table.insert(distinct, id)
+    end
+  end
+
+  if count ~= size then return comparedPermutation(records) end
+
+  if count == 0 then return {} end
+
+  table.sort(distinct)
+
+  for rank, id in distinct do
+    ranks[id] = rank
+  end
+
+  for position, id in ids do
+    if id == '' then continue end
+
+    local slot = (position - 1) * 8
+    buffer.writef64(keys, slot, buffer.readf64(keys, slot) + ranks[id])
+  end
+
+  local sorted = buffer.create(count * 4)
+  data.argsort(keys, 'f64', 0, count, sorted)
+  return [for slot in range(0, count - 1) => buffer.readu32(sorted, slot * 4) + 1]
 end
 
 function tes3.copy(value: Table): Table return table.clone(value) end
