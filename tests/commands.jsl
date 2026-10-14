@@ -2,7 +2,7 @@
 --!native
 -- `@tes3conv/commands`: a conversion as a request and a result. Every case reads the result
 -- table and the files; nothing here looks at what a terminal would show. The outputs are held
--- to the files tes3conv 0.4.1 wrote for the same inputs (see `encode.luau` for which is which),
+-- to the files tes3conv 0.4.1 wrote for the same inputs (see `encode.jsl` for which is which),
 -- and the backups to the names it gave its own.
 local bytes = require '@dream/bytes'
 local commands = require '@tes3conv/commands'

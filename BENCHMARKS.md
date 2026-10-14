@@ -1,6 +1,6 @@
 # tes3conv benchmarks
 
-`bench/bench.luau` times the package through its public API: a document read into record tables,
+`bench/bench.jsl` times the package through its public API: a document read into record tables,
 record tables written as a document, both conversions held and streamed, and the two orders
 tes3conv puts things in. Its inputs are `@tes3`'s every-type plugin with its golden documents
 (80 records, 49 KB as a plugin, 103 KB as indented JSON), a cell of 4,096 references placed at
@@ -11,7 +11,7 @@ Every call's result is checked against a count, a byte total, or a checksum of t
 
 ```sh
 jess run --package jpk/tes3conv --package-path jpk --capability filesystem.read \
-  jpk/tes3conv/bench/bench.luau [filter]
+  jpk/tes3conv/bench/bench.jsl [filter]
 ```
 
 ## The move onto l3i 2.0, base against head

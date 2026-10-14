@@ -259,7 +259,7 @@ suite.describe('run', function()
     expect(cli.run { input, output, 'more' }).toBe(8)
     expect(cli.run { '-', output }).toBe(8)
     expect(cli.run { jess.fs.join(work, 'missing.esp'), output }).toBe(8)
-    expect(cli.run { asset 'cli.luau', output }).toBe(8)
+    expect(cli.run { asset 'cli.jsl', output }).toBe(8)
     expect(cli.run { input, jess.fs.join(work, 'out.txt') }).toBe(8)
     expect(cli.run { input, jess.fs.join(work, 'no such folder', 'out.json') }).toBe(8)
     expect(names(work)).toEqual {}
