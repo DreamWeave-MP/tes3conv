@@ -1,5 +1,4 @@
 --!strict
---!native
 --[[
 @tes3conv: tes3conv's JSON plugins as jess record tables, and record tables
 written into a plugin the way tes3conv writes them.
@@ -135,6 +134,7 @@ local function parse(text: string, position: number, rawKeys: boolean): (Value, 
 
   --- `string.find(text, '%S', position)`: where the text goes on after its whitespace, which
   --- between two values is spaces and line ends, found without a pattern.
+  @native
   local function skip(position: number): number
     if not position then return string.find(text, '%S', position) :: number end
 
@@ -150,6 +150,7 @@ local function parse(text: string, position: number, rawKeys: boolean): (Value, 
     return string.find(text, '%S', position) :: number
   end
 
+  @native
   local function readString(position: number): (string, number)
     local first = position + 1
     local quote = string.find(text, '"', first, true)
@@ -175,6 +176,7 @@ local function parse(text: string, position: number, rawKeys: boolean): (Value, 
     return (string.gsub(raw, '\\(.)(%x?%x?%x?%x?)', unescape)), stop + 1
   end
 
+  @native
   function value(position: number): (Value, number)
     position = skip(position)
     local byte = string.byte(text, position)
@@ -449,6 +451,7 @@ local IndexLimit = 16777216
 -- and a tes3conv document's do, is in order already; any other is sorted by its places at once.
 -- References that share a place, or whose master or index is no number a plugin holds, are
 -- compared pair by pair instead, which leaves ties in an order of its own.
+@native
 function tes3conv.sortReferences(references: { Table })
   local count = #references
   if count < 2 then return end
@@ -788,6 +791,7 @@ end
 -- read into tables, and no more than a window is held. Outside a string it is stepped through
 -- a byte at a time; a string, which a landscape's or a script's can be most of a window, is
 -- stepped over by where the next quote and the next backslash are, each looked for once.
+@native
 local function spans(document: Text): ({ number }, { number })
   local starts: { number }, lengths: { number } = {}, {}
   local depth, offset = 0, 0

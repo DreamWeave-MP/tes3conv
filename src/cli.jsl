@@ -1,5 +1,4 @@
 --!strict
---!native
 --[[
 @tes3conv/cli: tes3conv's command line, over @tes3conv/commands.
 

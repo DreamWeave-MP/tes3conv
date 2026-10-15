@@ -1,5 +1,4 @@
 --!strict
---!native
 --[[
 The shape of tes3conv's JSON: for every record type, its fields in the order tes3conv writes
 them, and which of their numbers are floats.

@@ -1,5 +1,4 @@
 --!strict
---!native
 --[[
 @tes3conv/commands: what the tes3conv program does between reading its arguments and printing.
 It takes one request, a table of plain data, and returns one result, a table of plain data:
