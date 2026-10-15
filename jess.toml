@@ -5,7 +5,7 @@ id = "org.dreamweave.tes3conv"
 version = "0.1.0"
 jess_api = "1"
 default_target = "tes3conv"
-include = ["src"]
+include = ["src", "tests"]
 tests = [
   "tests/run.jsl",
   "tests/records.jsl",
@@ -48,4 +48,4 @@ exports = ["@tes3conv", "@tes3conv/records", "@tes3conv/commands", "@tes3conv/cl
 kind = "command"
 command = "tes3conv"
 entry = "src/main.jsl"
-capabilities = ["filesystem.read", "filesystem.write"]
+capabilities = ["filesystem.read", "filesystem.write", "process.stdio"]
