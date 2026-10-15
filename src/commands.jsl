@@ -126,9 +126,9 @@ local function check(request: ConvertRequest): string?
   local there = fs.stat(output)
   if there and not there.isFile then return `'{output}' is there already and isn't a file` end
 
-  local folder = jess.fs.parent(output)
+  local folder = fs.parent(output)
 
-  if folder and folder ~= '' and not jess.fs.isDir(folder) then
+  if folder and folder ~= '' and not fs.isDir(folder) then
     return `'{folder}', the folder '{output}' goes in, doesn't exist`
   end
 

@@ -6,6 +6,7 @@
 -- and the backups to the names it gave its own.
 local bytes = require '@dream/bytes'
 local commands = require '@tes3conv/commands'
+local fs = require '@dream/fs'
 local tes3 = require '@tes3'
 local test = require '@jess/test'
 local expect = test.expect
@@ -45,7 +46,7 @@ end
 local function asset(name: string): string return `{here()}/{name}` end
 
 local function contents(path: string): string
-  return buffer.tostring(assert(jess.fs.readBuffer(path), `{path} is missing`))
+  return buffer.tostring((fs.readFile(path) or error(`{path} is missing`, 0)))
 end
 
 --- Holds `actual` to `expected` by length and digest before the bytes, so a miss says something
@@ -60,18 +61,23 @@ end
 --- the source and once from the packed package, and the second run starts as clean as the first.
 local function folder(name: string): string
   local root = assert(rawget(_G, 'scratchRoot') :: string?, 'the case needs a scratchRoot')
-  local path = jess.fs.join(root, 'tes3conv-commands', name)
-  jess.fs.createDir(path)
+  local path = fs.join(root, 'tes3conv-commands', name)
+  local done, problem = fs.mkdir(path, { recursive = true })
+  if not done then error(problem, 0) end
 
-  for _, entry in jess.fs.list(path) do
-    jess.fs.remove(jess.fs.join(path, entry))
+  local names, problem = fs.list(path)
+  if not names then error(problem, 0) end
+
+  for _, entry in names do
+    fs.remove(fs.join(path, entry))
   end
 
   return path
 end
 
 local function names(path: string): { string }
-  local listed = jess.fs.list(path)
+  local listed, problem = fs.list(path)
+  if not listed then error(problem, 0) end
   table.sort(listed)
   return listed
 end
@@ -89,7 +95,7 @@ suite.describe('check', function()
     local work = folder 'check-passes'
     local input = asset 'assets/all_types.esp'
     expect(commands.check { input = input }).toBeNil()
-    expect(commands.check { input = input, output = jess.fs.join(work, 'out.json') }).toBeNil()
+    expect(commands.check { input = input, output = fs.join(work, 'out.json') }).toBeNil()
     expect(commands.check { input = input, output = 'out.esm', compact = true }).toBeNil()
     expect(commands.check { input = input, sink = function() end }).toBeNil()
     expect(names(work)).toEqual {}
@@ -98,17 +104,18 @@ suite.describe('check', function()
   suite.it('says why a request can\'t be carried out, without converting anything', function()
     local work = folder 'check-refuses'
     local input = asset 'assets/all_types.esp'
-    local missing = jess.fs.join(work, 'missing.esp')
-    local nested = jess.fs.join(work, 'no such folder', 'out.json')
-    local taken = jess.fs.join(work, 'taken.json')
-    jess.fs.createDir(taken)
+    local missing = fs.join(work, 'missing.esp')
+    local nested = fs.join(work, 'no such folder', 'out.json')
+    local taken = fs.join(work, 'taken.json')
+    local done, problem = fs.mkdir(taken, { recursive = true })
+    if not done then error(problem, 0) end
     expect(commands.check { input = 'plugin.txt' }).toBe '\'plugin.txt\' isn\'t a file tes3conv reads: it reads .esp, .esm, .omwaddon, and .json files'
     expect(commands.check { input = '-' }).toBe '\'-\' isn\'t a file tes3conv reads: it reads .esp, .esm, .omwaddon, and .json files'
     expect(commands.check { input = missing }).toBe(`'{missing}' doesn't exist`)
     expect(commands.check { input = taken }).toBe(`'{taken}' isn't a file`)
     expect(commands.check { input = input, output = 'out.txt' }).toBe '\'out.txt\' isn\'t a file tes3conv writes: it writes .esp, .esm, .omwaddon, and .json files'
     expect(commands.check { input = input, output = taken }).toBe(`'{taken}' is there already and isn't a file`)
-    expect(commands.check { input = input, output = nested }).toBe(`'{jess.fs.join(work, 'no such folder')}', the folder '{nested}' goes in, doesn't exist`)
+    expect(commands.check { input = input, output = nested }).toBe(`'{fs.join(work, 'no such folder')}', the folder '{nested}' goes in, doesn't exist`)
     expect(commands.check { input = input, output = 'out.json', sink = function() end }).toBe 'a request names an output or a sink, not both'
   end)
 
@@ -121,7 +128,7 @@ end)
 suite.describe('convert', function()
   suite.it('writes a plugin as the JSON tes3conv writes, and says what it did', function()
     local work = folder 'plugin-to-json'
-    local input, output = asset 'assets/all_types.esp', jess.fs.join(work, 'all_types.json')
+    local input, output = asset 'assets/all_types.esp', fs.join(work, 'all_types.json')
     local result = commands.convert { input = input, output = output }
     expect(result).toEqual {
       command = 'convert',
@@ -140,7 +147,7 @@ suite.describe('convert', function()
 
   suite.it('writes it compact when asked', function()
     local work = folder 'plugin-to-compact'
-    local output = jess.fs.join(work, 'all_types.JSON')
+    local output = fs.join(work, 'all_types.JSON')
     local result = commands.convert {
       input = asset 'assets/all_types.esp',
       output = output,
@@ -156,7 +163,7 @@ suite.describe('convert', function()
   suite.it('writes a document as the plugin tes3conv compiles, from either form', function()
     local work = folder 'json-to-plugin'
     local source = contents(asset 'assets/all_types.esp')
-    local output = jess.fs.join(work, 'all_types.esp')
+    local output = fs.join(work, 'all_types.esp')
     local result = commands.convert { input = asset 'golden/all_types.json', output = output }
     expect(result).toEqual {
       command = 'convert',
@@ -170,7 +177,7 @@ suite.describe('convert', function()
     }
 
     same(contents(output), source)
-    local again = jess.fs.join(work, 'compact.omwaddon')
+    local again = fs.join(work, 'compact.omwaddon')
     commands.convert { input = asset 'golden/all_types.compact.json', output = again }
     same(contents(again), source)
     expect(names(work)).toEqual { 'all_types.esp', 'compact.omwaddon' }
@@ -178,8 +185,8 @@ suite.describe('convert', function()
 
   suite.it('gives a plugin the file type its name stands for, and counts its records', function()
     local work = folder 'file-types'
-    local plugin, master = jess.fs.join(work, 'sample.esp'), jess.fs.join(work, 'sample.esm')
-    local addon = jess.fs.join(work, 'sample.omwaddon')
+    local plugin, master = fs.join(work, 'sample.esp'), fs.join(work, 'sample.esm')
+    local addon = fs.join(work, 'sample.omwaddon')
     local input = asset 'golden/sample.json'
     expect(commands.convert({ input = input, output = plugin }).records).toBe(12)
     commands.convert { input = input, output = master }
@@ -192,12 +199,14 @@ suite.describe('convert', function()
 
   suite.it('reads the input as what it holds, and writes what the output\'s name says', function()
     local work = folder 'by-content'
-    local disguised = jess.fs.join(work, 'really a plugin.json')
-    local document = jess.fs.join(work, 'really a document.esp')
-    jess.fs.write(disguised, contents(asset 'golden/sample.esp'))
-    jess.fs.write(document, contents(asset 'golden/sample.json'))
-    local reformatted = jess.fs.join(work, 'reformatted.json')
-    local rewritten = jess.fs.join(work, 'rewritten.esp')
+    local disguised = fs.join(work, 'really a plugin.json')
+    local document = fs.join(work, 'really a document.esp')
+    local done, problem = fs.writeFile(disguised, contents(asset 'golden/sample.esp'), { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
+    local done, problem = fs.writeFile(document, contents(asset 'golden/sample.json'), { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
+    local reformatted = fs.join(work, 'reformatted.json')
+    local rewritten = fs.join(work, 'rewritten.esp')
     local fromDocument = commands.convert { input = document, output = reformatted }
     expect(fromDocument.from).toBe 'json'
     expect(fromDocument.to).toBe 'json'
@@ -241,10 +250,11 @@ suite.describe('convert', function()
 
   suite.it('converts a file over itself', function()
     local work = folder 'in-place'
-    local path = jess.fs.join(work, 'sample.json')
-    jess.fs.write(path, contents(asset 'golden/sample.json'))
+    local path = fs.join(work, 'sample.json')
+    local done, problem = fs.writeFile(path, contents(asset 'golden/sample.json'), { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
     local result = commands.convert { input = path, output = path, compact = true }
-    expect(result.backup).toBe(jess.fs.join(work, 'sample.000.json'))
+    expect(result.backup).toBe(fs.join(work, 'sample.000.json'))
     same(contents(path), contents(asset 'golden/sample.compact.json'))
     same(contents(result.backup :: string), contents(asset 'golden/sample.json'))
   end)
@@ -253,39 +263,43 @@ end)
 suite.describe('backups', function()
   suite.it('copies a file already there to the first free numbered name', function()
     local work = folder 'backups'
-    local output = jess.fs.join(work, 'out.json')
+    local output = fs.join(work, 'out.json')
     local input = asset 'golden/sample.esp'
-    jess.fs.write(output, 'the first')
+    local done, problem = fs.writeFile(output, 'the first', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
     local first = commands.convert { input = input, output = output, compact = true }
-    expect(first.backup).toBe(jess.fs.join(work, 'out.000.json'))
+    expect(first.backup).toBe(fs.join(work, 'out.000.json'))
     expect(contents(first.backup :: string)).toBe 'the first'
-    jess.fs.write(output, 'the second')
+    local done, problem = fs.writeFile(output, 'the second', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
     local second = commands.convert { input = input, output = output, compact = true }
-    expect(second.backup).toBe(jess.fs.join(work, 'out.001.json'))
+    expect(second.backup).toBe(fs.join(work, 'out.001.json'))
     expect(contents(second.backup :: string)).toBe 'the second'
     expect(contents(first.backup :: string)).toBe 'the first'
-    jess.fs.remove(first.backup :: string)
+    fs.remove(first.backup :: string)
     local third = commands.convert { input = input, output = output, compact = true }
-    expect(third.backup).toBe(jess.fs.join(work, 'out.000.json'))
+    expect(third.backup).toBe(fs.join(work, 'out.000.json'))
     same(contents(third.backup :: string), contents(asset 'golden/sample.esp.compact.json'))
     expect(names(work)).toEqual { 'out.000.json', 'out.001.json', 'out.json' }
   end)
 
   suite.it('numbers a backup before the last extension only', function()
     local work = folder 'backup-names'
-    local dotted = jess.fs.join(work, 'Some.Mod v1.2.ESP')
-    jess.fs.write(dotted, 'old')
+    local dotted = fs.join(work, 'Some.Mod v1.2.ESP')
+    local done, problem = fs.writeFile(dotted, 'old', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
     local result = commands.convert { input = asset 'golden/sample.json', output = dotted }
-    expect(result.backup).toBe(jess.fs.join(work, 'Some.Mod v1.2.000.ESP'))
+    expect(result.backup).toBe(fs.join(work, 'Some.Mod v1.2.000.ESP'))
     expect(contents(result.backup :: string)).toBe 'old'
   end)
 
   suite.it('makes none when there is nothing there, or when told to overwrite', function()
     local work = folder 'overwrite'
-    local output = jess.fs.join(work, 'out.json')
+    local output = fs.join(work, 'out.json')
     local input = asset 'golden/sample.esp'
     expect(commands.convert({ input = input, output = output }).backup).toBeNil()
-    jess.fs.write(output, 'old')
+    local done, problem = fs.writeFile(output, 'old', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
     local result = commands.convert { input = input, output = output, overwrite = true, compact = true }
     expect(result.backup).toBeNil()
     same(contents(output), contents(asset 'golden/sample.esp.compact.json'))
@@ -294,11 +308,13 @@ suite.describe('backups', function()
 
   suite.it('refuses to write when a thousand backups are kept already', function()
     local work = folder 'thousand'
-    local output = jess.fs.join(work, 'out.json')
-    jess.fs.write(output, 'old')
+    local output = fs.join(work, 'out.json')
+    local done, problem = fs.writeFile(output, 'old', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
 
     for number = 0, 999 do
-      jess.fs.write(jess.fs.join(work, string.format('out.%03d.json', number)), '')
+      local done, problem = fs.writeFile(fs.join(work, string.format('out.%03d.json', number)), '', { atomic = true, createParents = true })
+      if not done then error(problem, 0) end
     end
 
     expect(function() commands.convert { input = asset 'golden/sample.esp', output = output } end).toThrow 'can\'t be backed up: a thousand backups of it are kept already'
@@ -307,9 +323,9 @@ suite.describe('backups', function()
     expect(function()
       commands.convert { input = asset 'golden/sample.esp', output = output, dryRun = true }
     end).toThrow 'a thousand backups of it are kept already'
-    jess.fs.remove(jess.fs.join(work, 'out.417.json'))
+    fs.remove(fs.join(work, 'out.417.json'))
     local result = commands.convert { input = asset 'golden/sample.esp', output = output }
-    expect(result.backup).toBe(jess.fs.join(work, 'out.417.json'))
+    expect(result.backup).toBe(fs.join(work, 'out.417.json'))
     expect(contents(result.backup :: string)).toBe 'old'
   end)
 end)
@@ -317,7 +333,7 @@ end)
 suite.describe('dry runs', function()
   suite.it('say what would be written and backed up, and write nothing', function()
     local work = folder 'dry-run'
-    local output = jess.fs.join(work, 'out.json')
+    local output = fs.join(work, 'out.json')
     local input = asset 'assets/all_types.esp'
     local fresh = commands.convert { input = input, output = output, dryRun = true }
     expect(fresh).toEqual {
@@ -332,9 +348,10 @@ suite.describe('dry runs', function()
     }
 
     expect(names(work)).toEqual {}
-    jess.fs.write(output, 'old')
+    local done, problem = fs.writeFile(output, 'old', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
     local over = commands.convert { input = input, output = output, dryRun = true, compact = true }
-    expect(over.backup).toBe(jess.fs.join(work, 'out.000.json'))
+    expect(over.backup).toBe(fs.join(work, 'out.000.json'))
     expect(over.size).toBe(77194)
     expect(over.bytes).toBeNil()
     expect(contents(output)).toBe 'old'
@@ -346,10 +363,12 @@ suite.describe('dry runs', function()
 
   suite.it('still raise for an input that can\'t be converted', function()
     local work = folder 'dry-run-fails'
-    local garbage = jess.fs.join(work, 'garbage.esp')
-    jess.fs.write(garbage, 'garbage')
+    local garbage = fs.join(work, 'garbage.esp')
+    local done, problem = fs.writeFile(garbage, 'garbage', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
+
     expect(function()
-      commands.convert { input = garbage, output = jess.fs.join(work, 'out.json'), dryRun = true }
+      commands.convert { input = garbage, output = fs.join(work, 'out.json'), dryRun = true }
     end).toThrow 'is neither a TES3 plugin nor a tes3conv JSON document'
     expect(names(work)).toEqual { 'garbage.esp' }
   end)
@@ -358,16 +377,22 @@ end)
 suite.describe('failures', function()
   suite.it('leave the output as it was, and nothing half written beside it', function()
     local work = folder 'failures'
-    local output = jess.fs.join(work, 'out.json')
-    local garbage, empty = jess.fs.join(work, 'garbage.esp'), jess.fs.join(work, 'empty.json')
-    local cut, broken = jess.fs.join(work, 'cut.esp'), jess.fs.join(work, 'broken.json')
-    local strange = jess.fs.join(work, 'strange.json')
-    jess.fs.write(output, 'old')
-    jess.fs.write(garbage, 'garbage')
-    jess.fs.write(empty, '')
-    jess.fs.write(cut, string.sub(contents(asset 'assets/all_types.esp'), 1, 1000))
-    jess.fs.write(broken, '[{"type":"Static","flags":"","id":"x"')
-    jess.fs.write(strange, '[{"type":"Starship","id":"x"}]')
+    local output = fs.join(work, 'out.json')
+    local garbage, empty = fs.join(work, 'garbage.esp'), fs.join(work, 'empty.json')
+    local cut, broken = fs.join(work, 'cut.esp'), fs.join(work, 'broken.json')
+    local strange = fs.join(work, 'strange.json')
+    local done, problem = fs.writeFile(output, 'old', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
+    local done, problem = fs.writeFile(garbage, 'garbage', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
+    local done, problem = fs.writeFile(empty, '', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
+    local done, problem = fs.writeFile(cut, string.sub(contents(asset 'assets/all_types.esp'), 1, 1000), { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
+    local done, problem = fs.writeFile(broken, '[{"type":"Static","flags":"","id":"x"', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
+    local done, problem = fs.writeFile(strange, '[{"type":"Starship","id":"x"}]', { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
     local before = names(work)
     expect(function() commands.convert { input = garbage, output = output } end).toThrow(`'{garbage}' is neither a TES3 plugin nor a tes3conv JSON document`)
     expect(function() commands.convert { input = empty, output = output } end).toThrow(`'{empty}' is neither a TES3 plugin nor a tes3conv JSON document`)
@@ -375,7 +400,7 @@ suite.describe('failures', function()
     expect(function() commands.convert { input = broken, output = output } end).toThrow(`'{broken}' can't be converted: the document ends inside record 1`)
     expect(function() commands.convert { input = strange, output = output } end).toThrow(`'{strange}' can't be converted: 'Starship' isn't a record type tes3conv writes`)
     expect(function()
-      commands.convert { input = strange, output = jess.fs.join(work, 'out.esp') }
+      commands.convert { input = strange, output = fs.join(work, 'out.esp') }
     end).toThrow(`'{strange}' can't be converted: tes3conv.compileTo: records must start with a Header`)
     expect(contents(output)).toBe 'old'
     expect(names(work)).toEqual(before)

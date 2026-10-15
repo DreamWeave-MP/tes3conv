@@ -3,6 +3,7 @@
 -- tes3conv's own cases: its JSON read into record tables, and record tables through `@tes3`
 -- plugins and back, on a document and plugins small enough to read and on `@tes3`'s every-type
 -- plugin (`assets/all_types.esp`, copied from its suite).
+local fs = require '@dream/fs'
 local tes3 = require '@tes3'
 local tes3conv = require '@tes3conv'
 local test = require '@jess/test'
@@ -415,11 +416,12 @@ suite.describe('documents', function()
 
   suite.it('reads a document from a file', function()
     local scratch = assert(rawget(_G, 'scratchRoot') :: string?, 'the case needs a scratchRoot')
-    local path = jess.fs.join(scratch, 'tes3conv-document.json')
-    jess.fs.write(path, Document)
+    local path = fs.join(scratch, 'tes3conv-document.json')
+    local done, problem = fs.writeFile(path, Document, { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
     expect(tes3conv.read(path)).toEqual(tes3conv.decode(Document))
     expect(tes3conv.read(path, { lazy = { Cell = true } })[4]).toEqual { type = 'Cell' }
-    expect(function() tes3conv.read(jess.fs.join(scratch, 'tes3conv-missing.json')) end).toThrow 'tes3conv-missing.json\' doesn\'t exist'
+    expect(function() tes3conv.read(fs.join(scratch, 'tes3conv-missing.json')) end).toThrow 'tes3conv-missing.json\' doesn\'t exist'
   end)
 end)
 
@@ -777,7 +779,9 @@ suite.describe('round trips', function()
   end)
 
   suite.it('rebuilds the every-type plugin byte for byte', function()
-    local source = buffer.tostring(assert(jess.fs.readBuffer(`{here()}/assets/all_types.esp`)))
+    local fileBytes, problem = fs.readFile(`{here()}/assets/all_types.esp`)
+    if not fileBytes then error(problem, 0) end
+    local source = buffer.tostring(fileBytes)
     local records, bytes = tes3conv.recordsWithBytes(tes3.open(source))
     expect(#records).toBe(80)
     -- Compared as booleans: a mismatch would print both plugins whole.

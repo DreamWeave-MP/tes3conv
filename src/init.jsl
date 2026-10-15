@@ -59,6 +59,7 @@ goes by; one record's tables; and one chunk. Their output is byte for byte `enco
 local Encode = require '@self/encode'
 local bytes = require '@dream/bytes'
 local data = require '@dream/data'
+local fs = require '@dream/fs'
 local tes3 = require '@self/records'
 local core = require '@tes3'
 
@@ -328,7 +329,7 @@ function tes3conv.decode(text: string, options: Options?): Records
 end
 
 function tes3conv.read(path: string, options: Options?): Records
-  local text = jess.fs.read(path)
+  local text = fs.readFileString(path)
 
   if not text then error(`'{path}' doesn't exist`) end
 
@@ -727,7 +728,8 @@ function tes3conv.encode(records: Records, options: EncodeOptions?): string
 end
 
 function tes3conv.write(path: string, records: Records, options: EncodeOptions?)
-  jess.fs.write(path, tes3conv.encode(records, options))
+  local done, problem = fs.writeFile(path, tes3conv.encode(records, options), { atomic = true, createParents = true })
+  if not done then error(problem, 0) end
 end
 
 -- The record types whose place in tes3conv's order depends on nothing they hold (see

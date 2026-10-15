@@ -5,6 +5,7 @@
 -- fixture, and to what tes3conv 0.4.1 wrote for documents too long for one chunk, one window, or
 -- one buffer; the lengths and digests below are of the program's own files.
 local bytes = require '@dream/bytes'
+local fs = require '@dream/fs'
 local tes3 = require '@tes3'
 local tes3conv = require '@tes3conv'
 local test = require '@jess/test'
@@ -95,7 +96,7 @@ local function here(): string
 end
 
 local function file(name: string): string
-  return buffer.tostring(assert(jess.fs.readBuffer(`{here()}/{name}`), `{name} is missing`))
+  return buffer.tostring((fs.readFile(`{here()}/{name}`) or error(`{name} is missing`, 0)))
 end
 
 --- Holds `actual` to `expected` by length and digest before the bytes, so a miss says something

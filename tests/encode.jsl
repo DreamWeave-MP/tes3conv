@@ -10,6 +10,7 @@
 --
 -- and so did every text and digest written out below. The program is never run from here.
 local bytes = require '@dream/bytes'
+local fs = require '@dream/fs'
 local tes3 = require '@tes3'
 local tes3conv = require '@tes3conv'
 local test = require '@jess/test'
@@ -81,7 +82,7 @@ local function here(): string
 end
 
 local function file(name: string): string
-  return buffer.tostring(assert(jess.fs.readBuffer(`{here()}/{name}`), `{name} is missing`))
+  return buffer.tostring((fs.readFile(`{here()}/{name}`) or error(`{name} is missing`, 0)))
 end
 
 --- Holds `actual` to `expected` by length and digest before the bytes, so a miss says something
@@ -313,12 +314,16 @@ suite.describe('encode', function()
 
   suite.it('writes a file', function()
     local scratch = assert(rawget(_G, 'scratchRoot') :: string?, 'the case needs a scratchRoot')
-    local path = jess.fs.join(scratch, 'tes3conv-written.json')
+    local path = fs.join(scratch, 'tes3conv-written.json')
     local records = tes3conv.sort(tes3conv.decode(file 'golden/sample.json'))
     tes3conv.write(path, records, Compact)
-    same(assert(jess.fs.read(path)), file 'golden/sample.compact.json')
+    local fileText, problem = fs.readFileString(path)
+    if not fileText then error(problem, 0) end
+    same(fileText, file 'golden/sample.compact.json')
     tes3conv.write(path, records)
-    same(assert(jess.fs.read(path)), file 'golden/sample.pretty.json')
+    local fileText, problem = fs.readFileString(path)
+    if not fileText then error(problem, 0) end
+    same(fileText, file 'golden/sample.pretty.json')
   end)
 end)
 

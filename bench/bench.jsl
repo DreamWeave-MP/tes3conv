@@ -5,6 +5,7 @@
 -- record list the size a master's are. Run by `jess run --capability filesystem.read --package .
 -- --package-path .. bench/bench.jsl [filter]`, on a release build.
 local core = require '@tes3'
+local fs = require '@dream/fs'
 local records = require '@tes3conv/records'
 local tes3conv = require '@tes3conv'
 
@@ -76,7 +77,7 @@ local function here(): string
 end
 
 local function file(name: string): string
-  return buffer.tostring(assert(jess.fs.readBuffer(`{here()}/../tests/{name}`), `{name} is missing`))
+  return buffer.tostring((fs.readFile(`{here()}/../tests/{name}`) or error(`{name} is missing`, 0)))
 end
 
 local random = 0x2545f491
