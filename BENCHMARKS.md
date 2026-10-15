@@ -97,3 +97,69 @@ multiply out to the table above any closer than that.
 | | `compile` and `compileTo` of the cell | 1.45x, 1.13x |
 | `23514a4`, a cell's references told to be settled from their places | `encode` of the cell | 1.17x, both forms |
 | | `compile`, `transcribeTo`, `compileTo` of the cell | 1.23x, 1.10x, 1.09x |
+
+## Which modules are native, and why
+
+Jess compiles to machine code only what is marked (`--!native` on a module, `@native` on one
+function), and every load pays for what is marked. A module carries `--!native` when a row below
+spends its time there and the module is small (12 KB or less); a larger module carries `@native`
+on the functions the row spends its time in, and nothing else.
+
+Measured 2026-10-15 with `jess 0.1.0`, the verified release build of jess `07c38cb` on l3i
+2.0.3, on the i7-10870H, the one-minute load 1.02 and 1.46 at the start of the two
+sessions. In each session the bench ran alternately on this package and on a copy of it with
+every module marked, three fresh runs of `bench/bench.jsl` each, every run's row the median of
+its batches; a column is the median of the three, and a ratio is against the all-marked runs of
+the same session. Which functions a row spends its time in comes from `jess run --profile` of
+that row alone, unmarked. The load cost is a fresh `jess run --package <this package>
+--package-path jpk` of a script that only requires `@tes3conv`, the two sides alternating, the
+median of five each after one warm-up.
+
+| Requiring `@tes3conv` | All marked | This state |
+| --- | ---: | ---: |
+| Unmarked | 0.108 s | 0.096 s |
+| Final | 0.124 s | 0.119 s |
+
+| Row | All marked (ms) | Unmarked / all marked | Final (ms) | Final / all marked |
+| --- | ---: | ---: | ---: | ---: |
+| decode all_types.json | 1.288 | **2.174×** | 1.303 | 1.012× |
+| decode all_types.compact.json | 0.9660 | **2.036×** | 0.9911 | 1.026× |
+| decode all_types.json, cells and dialogue lazy | 0.7955 | **2.082×** | 0.8288 | 1.042× |
+| decode a cell of 4096 references | 20.52 | **2.786×** | 20.37 | 0.993× |
+| decode a cell of 4096 references, compact | 14.54 | **2.567×** | 14.11 | 0.971× |
+| encode all_types | 0.5037 | **2.155×** | 0.5070 | 1.007× |
+| encode all_types, compact | 0.4744 | **2.165×** | 0.4842 | 1.021× |
+| encode a cell of 4096 references | 15.10 | **3.011×** | 15.75 | 1.043× |
+| encode a cell of 4096 references, compact | 13.91 | **3.148×** | 14.43 | 1.037× |
+| records of all_types.esp | 0.5344 | 1.025× | 0.5401 | 1.011× |
+| transcribe all_types.esp | 1.321 | **1.481×** | 1.379 | 1.043× |
+| transcribeTo from all_types.json | 3.013 | **2.772×** | 2.956 | 0.981× |
+| transcribeTo from a cell of 4096 references | 43.14 | **3.812×** | 42.79 | 0.992× |
+| compile all_types | 1.093 | 1.018× | 1.097 | 1.003× |
+| compile a cell of 4096 references | 9.173 | **1.125×** | 9.608 | 1.047× |
+| compileTo from all_types.json | 3.408 | **2.445×** | 3.264 | 0.958× |
+| compileTo from all_types.esp | 1.873 | 1.048× | 1.858 | 0.992× |
+| compileTo from a cell of 4096 references | 38.38 | **3.624×** | 38.56 | 1.005× |
+| sort 8192 records | 3.610 | **1.621×** | 3.578 | 0.991× |
+| sortPermutation of 8192 records | 3.083 | **1.626×** | 3.071 | 0.996× |
+| sortReferences, 4096 in order | 0.3736 | **2.660×** | 0.3665 | 0.981× |
+| sortReferences, 4096 shuffled | 0.6962 | **2.213×** | 0.7004 | 1.006× |
+| sortReferences, 256 lists of 16 in order | 0.4530 | **2.434×** | 0.4621 | 1.020× |
+| sortReferences, 256 lists of 16 shuffled | 0.7200 | **2.141×** | 0.6937 | 0.963× |
+| deepCopy and equal over all_types | 0.2525 | **1.560×** | 0.2544 | 1.008× |
+| replaceNoCase over all_types.json | 0.2767 | 1.006× | 0.2941 | **1.063×** |
+
+What carries the directive (every module and function here is one a row spends its time in,
+unmarked):
+
+- Whole: `encode`, `records`.
+- `init`, by function: `skip`, `readString`, `value`, `tes3conv.sortReferences`, `spans`.
+- Unmarked: `cli`, `commands`, `main`, `schema`.
+
+Marked by function first, encoding, transcribing, and compiling stayed 1.05x to 1.10x slower than
+all marked, and a real conversion is a whole plugin, seconds long, where that ratio outweighs what
+a load saves; so `encode` and `records` are marked whole. `cli` and `main` parse a command line
+once a run and are never marked. The one row still above 5%, `replaceNoCase` over a JSON text
+(1.063x, of a 0.3 ms call), is inside this protocol's noise: two all-marked copies of
+dream-archive, measured the same way, put 10 of 109 rows more than 5% apart, the 95th percentile
+at 1.074x.
