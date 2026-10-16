@@ -174,7 +174,8 @@ local function parse(text: string, position: number, rawKeys: boolean): (Value, 
     end
 
     local raw = string.sub(text, first, stop - 1)
-    return (string.gsub(raw, '\\(.)(%x?%x?%x?%x?)', unescape)), stop + 1
+    -- gsub hands `unescape` both captures; Luau's type for string.gsub names a function of one.
+    return (string.gsub(raw, '\\(.)(%x?%x?%x?%x?)', unescape :: (string) -> string)), stop + 1
   end
 
   @native
@@ -413,7 +414,7 @@ function tes3conv.prepare(record: Table): Table
 
       tes3conv.sortReferences(copied)
       record = table.clone(record)
-      record.references = copied
+      record.references = copied :: Value
     end
   end
 
@@ -492,7 +493,7 @@ function tes3conv.sortReferences(references: { Table })
 
   local order = buffer.create(count * 4)
   data.argsort(places, 'f64', 0, count, order)
-  local sorted: { Table } = table.create(count)
+  local sorted = table.create(count) :: { Table }
   last = -1
 
   for slot = 0, count - 1 do
@@ -679,7 +680,7 @@ local function settled(cell: Table): Table
 
   tes3conv.sortReferences(unique)
   local copy = table.clone(cell)
-  copy.references = unique
+  copy.references = unique :: Value
   return copy
 end
 
@@ -762,7 +763,7 @@ end
 
 local function pluginSource(plugin: core.Plugin): Source
   local count = plugin:count()
-  local keys: Records = table.create(count)
+  local keys = table.create(count) :: Records
 
   for index = 0, count - 1 do
     local kind = core.typeName(plugin:tag(index))
@@ -890,7 +891,7 @@ end
 -- it is wanted, and let go.
 local function documentSource(document: Text): Source
   local starts, lengths = spans(document)
-  local keys: Records = table.create(#starts)
+  local keys = table.create(#starts) :: Records
 
   for ordinal, start in starts do
     local length = lengths[ordinal]

@@ -51,7 +51,7 @@ local function compared(list: records.Records): { number }
     entries[position] = { order = order or 41, hint = hint, id = id, position = position }
   end
 
-  table.sort(entries, function(left, right)
+  table.sort(entries, function(left: Entry, right: Entry): boolean
     if left.order ~= right.order then return left.order < right.order end
 
     if left.hint ~= right.hint then return left.hint < right.hint end
@@ -146,7 +146,7 @@ local function labels(list: records.Records): { string }
   return out
 end
 
-local function count(map: { [string]: unknown }): number
+local function count<Value>(map: { [string]: Value }): number
   local total = 0
   for _ in map do
     total += 1

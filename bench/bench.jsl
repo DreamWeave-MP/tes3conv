@@ -224,8 +224,9 @@ local function arranged(sorted: { Record }): number
   return total
 end
 
-local Compact = { compact = true }
-local Lazy = { lazy = { Cell = true, Landscape = true, PathGrid = true, Dialogue = true, DialogueInfo = true } }
+local Compact: tes3conv.EncodeOptions = { compact = true }
+local Lazy: tes3conv.Options =
+  { lazy = { Cell = true, Landscape = true, PathGrid = true, Dialogue = true, DialogueInfo = true } }
 
 local pluginBytes = file 'assets/all_types.esp'
 local document = file 'golden/all_types.json'

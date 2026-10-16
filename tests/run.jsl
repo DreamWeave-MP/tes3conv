@@ -369,7 +369,7 @@ suite.describe('documents', function()
     local records = tes3conv.decode(Document)
     expect(#records).toBe(4)
     expect(records[1].fileType).toBe 'Esp'
-    expect(records[2].value.data).toBe 'say "hi"\n\u{e9}'
+    expect((records[2].value :: Record).data).toBe 'say "hi"\n\u{e9}'
   end)
 
   suite.it('leaves lazy types unread until realized', function()
@@ -452,7 +452,7 @@ suite.describe('prepare', function()
   )
 
   suite.it('terminates each type\'s exact text, once', function()
-    local exact = {
+    local exact: { [string]: string } = {
       Book = 'text',
       Class = 'description',
       DialogueInfo = 'scriptText',
@@ -650,7 +650,7 @@ suite.describe('plugins', function()
     local back = tes3conv.records(plugin)
     expect(back[2].type).toBe 'GameSetting'
     expect(back[3].description).toBe 'Flies.'
-    expect(back[2].value.data).toBe 'say "hi"\n\u{e9}'
+    expect((back[2].value :: Record).data).toBe 'say "hi"\n\u{e9}'
   end)
 
   suite.it('refuses records that don\'t start with a header', function()

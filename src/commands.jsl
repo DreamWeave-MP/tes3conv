@@ -181,7 +181,7 @@ local function source(input: string): (core.Plugin | tes3conv.Text, Format)
 
   -- `core.open` raises on bytes that don't frame as records: a file cut short, a size that runs
   -- past the end.
-  local framed, opened = pcall(core.open, data)
+  local framed, opened = pcall(core.open, data, nil)
   if not framed then error(`'{input}' can't be read as a plugin: {reason(opened)}`, 0) end
 
   return opened, 'plugin'

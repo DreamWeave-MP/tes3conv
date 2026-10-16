@@ -19,7 +19,7 @@ local suite = test.new()
 
 type Record = { [string | number]: any }
 
-local Compact = { compact = true }
+local Compact: tes3conv.EncodeOptions = { compact = true }
 
 -- What tes3conv wrote for `floats()`: each file's length and SHA-256.
 local FloatsCompact = {
@@ -153,14 +153,15 @@ local function cellReferences(count: number, shape: string): { Record }
   local list: { Record } = {}
 
   local function add(master: number, index: number, temporary: boolean)
-    table.insert(list, {
+    local reference: Record = {
       id = `r{#list + 1}`,
       mastIndex = master,
       refrIndex = index,
       temporary = if temporary then true else nil,
       translation = { 0, 0, 0 },
       rotation = { 0, 0, 0 },
-    })
+    }
+    table.insert(list, reference)
   end
 
   for position = 1, count do
@@ -372,7 +373,7 @@ suite.describe('text', function()
   end)
 
   suite.it('escapes every control character, NUL among them', function()
-    local controls = {}
+    local controls: { string } = {}
 
     for code = 0, 31 do
       table.insert(controls, string.char(code))

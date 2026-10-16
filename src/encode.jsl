@@ -668,9 +668,9 @@ function write(plan: Plan, value: Value, depth: number)
   elseif kind == 'tagged' then
     local tag = members.type
     local variant = if type(tag) == 'string' then plan.variants[tag] else nil
-    if not variant then return fail(`'{tag}' isn't a type the value can have`) end
+    if not variant then fail(`'{tag}' isn't a type the value can have`) end
 
-    fields(variant, members, depth, tag :: string)
+    fields(variant :: Plan, members, depth, tag :: string)
     return
   end
 

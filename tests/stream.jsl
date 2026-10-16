@@ -15,7 +15,7 @@ local suite = test.new()
 type Record = { [string | number]: any }
 type Pin = { size: number, digest: string }
 
-local Compact = { compact = true }
+local Compact: tes3conv.EncodeOptions = { compact = true }
 
 -- The most a sink is handed at once, and the most a `Text` is asked for.
 local Chunk, Window = 1048576, 262144

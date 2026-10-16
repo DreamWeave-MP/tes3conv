@@ -420,7 +420,7 @@ local function comparedPermutation(records: Records): { number }
     )
   end
 
-  table.sort(entries, function(left, right)
+  table.sort(entries, function(left: Entry, right: Entry): boolean
     if left.order ~= right.order then
       return left.order < right.order
     elseif left.hint ~= right.hint then
@@ -444,7 +444,7 @@ function tes3.sortPermutation(records: Records): { number }
   if size >= RankSpan then return comparedPermutation(records) end
 
   local keys = buffer.create(size * 8)
-  local ids: { string } = table.create(size)
+  local ids = table.create(size) :: { string }
   local ranks: { [string]: number } = {}
   local distinct: { string } = {}
   local count = 0

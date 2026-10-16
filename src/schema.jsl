@@ -18,21 +18,21 @@ A `blob` is text like any other, marked because it is long and never needs escap
 tes3conv writes for bytes it doesn't take apart (a script's bytecode, a landscape's heights).
 ]]
 
-export type Field = { name: string, key: string, node: Node }
+export type Field = { read name: string, read key: string, read node: Node }
 
 --- `plain`: text, a boolean, an integer, or lists of them. `float`: an f32. `blob`: base64.
 --- `struct`: fields in order. `list`: items of one shape. `tagged`: a table whose `type` names
 --- which fields it has.
 export type Node = {
-  kind: 'plain' | 'float' | 'blob' | 'struct' | 'list' | 'tagged',
-  fields: { Field }?,
-  item: Node?,
-  variants: { [string]: Node }?,
+  read kind: 'plain' | 'float' | 'blob' | 'struct' | 'list' | 'tagged',
+  read fields: { Field }?,
+  read item: Node?,
+  read variants: { [string]: Node }?,
 }
 
-local Plain: Node = table.freeze { kind = 'plain' :: 'plain' }
-local Float: Node = table.freeze { kind = 'float' :: 'float' }
-local Blob: Node = table.freeze { kind = 'blob' :: 'blob' }
+local Plain = table.freeze({ kind = 'plain' } :: Node)
+local Float = table.freeze({ kind = 'float' } :: Node)
+local Blob = table.freeze({ kind = 'blob' } :: Node)
 
 --- omwaddon::symbol::camel_case, as `@tes3conv` reads keys: `_` before a lowercase letter becomes
 --- that letter uppercased, except at the start.
@@ -41,10 +41,10 @@ local function camel(name: string): string
 end
 
 local function field(name: string, node: Node): Field
-  return table.freeze { name = name, key = camel(name), node = node }
+  return table.freeze({ name = name, key = camel(name), node = node } :: Field)
 end
 
-local function list(item: Node): Node return table.freeze { kind = 'list' :: 'list', item = item } end
+local function list(item: Node): Node return table.freeze({ kind = 'list', item = item } :: Node) end
 
 local Floats = list(Float)
 
@@ -59,11 +59,11 @@ local function struct(members: { string | Field }): Node
   local fields: { Field } =
     [for member in members => if type(member) == 'string' then field(member, Plain) else member]
 
-  return table.freeze { kind = 'struct' :: 'struct', fields = table.freeze(fields) }
+  return table.freeze({ kind = 'struct', fields = table.freeze(fields) } :: Node)
 end
 
 local function tagged(variants: { [string]: Node }): Node
-  return table.freeze { kind = 'tagged' :: 'tagged', variants = table.freeze(variants) }
+  return table.freeze({ kind = 'tagged', variants = table.freeze(variants) } :: Node)
 end
 
 --- A number or a string under `data`, as tes3conv tags a value that can be either.
