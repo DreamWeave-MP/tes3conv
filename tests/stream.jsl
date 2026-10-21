@@ -6,7 +6,7 @@
 -- one buffer; the lengths and digests below are of the program's own files.
 local bytes = require '@dream/bytes'
 local fs = require '@dream/fs'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 local tes3conv = require '@tes3conv'
 local test = require '@jess/test'
 local expect = test.expect

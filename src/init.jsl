@@ -50,7 +50,7 @@ the master. `transcribeTo` and `compileTo` are the same two conversions for a wh
 never hold them: the source is a plugin or a document, each record is read, written, and let go,
 and the output is handed to a sink a chunk of at most a megabyte at a time. A document is its
 text, or a `Text`, which reads it a stretch at a time from wherever it is, so that it need not be
-held either. What they hold is a plugin's bytes, whole (`@tes3` opens a plugin from all of it),
+held either. What they hold is a plugin's bytes, whole (`@esm` opens a plugin from all of it),
 or a quarter megabyte of a document at a time; where each record is and the id tes3conv's order
 goes by; one record's tables; and one chunk. Their output is byte for byte `encode`'s and
 `compile(...):save()`'s.
@@ -61,7 +61,7 @@ local bytes = require '@dream/bytes'
 local data = require '@dream/data'
 local fs = require '@dream/fs'
 local tes3 = require '@self/records'
-local core = require '@tes3'
+local core = require '@esm'
 
 type Table = tes3.Table
 type Value = tes3.Value

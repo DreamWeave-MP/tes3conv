@@ -1,10 +1,10 @@
 --!strict
 -- tes3conv, timed from Luau: a document read into record tables, record tables written as a
 -- document, both conversions held and streamed, and the orders tes3conv puts records and
--- references in. On `@tes3`'s every-type plugin and its golden documents, and on a cell and a
+-- references in. On `@esm`'s every-type plugin and its golden documents, and on a cell and a
 -- record list the size a master's are. Run by `jess run --capability filesystem.read --package .
 -- --package-path .. bench/bench.jsl [filter]`, on a release build.
-local core = require '@tes3'
+local core = require '@esm'
 local fs = require '@dream/fs'
 local records = require '@tes3conv/records'
 local tes3conv = require '@tes3conv'

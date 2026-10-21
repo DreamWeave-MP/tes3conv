@@ -1,10 +1,10 @@
 --!strict
 --!native
--- tes3conv's own cases: its JSON read into record tables, and record tables through `@tes3`
--- plugins and back, on a document and plugins small enough to read and on `@tes3`'s every-type
+-- tes3conv's own cases: its JSON read into record tables, and record tables through `@esm`
+-- plugins and back, on a document and plugins small enough to read and on `@esm`'s every-type
 -- plugin (`assets/all_types.esp`, copied from its suite).
 local fs = require '@dream/fs'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 local tes3conv = require '@tes3conv'
 local test = require '@jess/test'
 local expect = test.expect

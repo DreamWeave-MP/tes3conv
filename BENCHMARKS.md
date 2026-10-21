@@ -2,7 +2,7 @@
 
 `bench/bench.jsl` times the package through its public API: a document read into record tables,
 record tables written as a document, both conversions held and streamed, and the two orders
-tes3conv puts things in. Its inputs are `@tes3`'s every-type plugin with its golden documents
+tes3conv puts things in. Its inputs are `@esm`'s every-type plugin with its golden documents
 (80 records, 49 KB as a plugin, 103 KB as indented JSON), a cell of 4,096 references placed at
 f32s that take eight or nine digits (1.26 MB indented, 614 KB compact), and a list of 8,192
 records with only what orders them. Each workload is warmed up, sized to a batch of about a tenth
@@ -19,7 +19,7 @@ jess run --package jpk/tes3conv --package-path jpk --capability filesystem.read 
 - Machine: Intel Core i7-10870H @ 2.20 GHz, 16 threads, shared with other work while this ran.
 - Date: 2026-10-12.
 - Binary: the verified release build of Jess 0.1.0 on l3i 2.0.1 (Luau 0.742), the same one for
-  both sides, and the same `@tes3` beside both, which took one commit during the first of the
+  both sides, and the same `@esm` beside both, which took one commit during the first of the
   five rounds.
 - Base: `8f98522`, the package before the move, with this bench. Head: `d2aa0da`.
 - Protocol: the whole bench run against base, then head, five times over, back to back under one
@@ -72,7 +72,7 @@ settled from the same places, is what the cell rows of `encode` and `compile` ga
 `sortReferences` rows include the bench's own copy of the list and its checksum.
 
 What did not move: writing JSON, which already went digit by digit into one buffer, and every
-row that starts from a plugin, where the time is `@tes3`'s decoding and that writer. The every-type
+row that starts from a plugin, where the time is `@esm`'s decoding and that writer. The every-type
 rows of `encode` came out even. The 6 percent on `records` and on `compile all_types` is at the
 edge of what this machine could tell apart while it was shared, and `records` had rounds on both
 sides of even: neither is claimed. `replaceNoCase`, whose code is as it was, read 5 percent ahead

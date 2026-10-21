@@ -1,9 +1,9 @@
 --!strict
 --!native
 -- `@tes3conv/records`' own cases: the helpers the tools built on tes3conv-shaped records share,
--- on known values, and its tables against `@tes3`'s.
+-- on known values, and its tables against `@esm`'s.
 local records = require '@tes3conv/records'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 local test = require '@jess/test'
 local expect = test.expect
 local suite = test.new()
@@ -156,7 +156,7 @@ local function count<Value>(map: { [string]: Value }): number
 end
 
 suite.describe('tables', function()
-  suite.it('names each type by the tag @tes3 gives it', function()
+  suite.it('names each type by the tag @esm gives it', function()
     local shared = 0
 
     for _, spec in tes3.recordTypes do
@@ -190,7 +190,7 @@ suite.describe('tables', function()
     expect(records.SortOrder.DialogueInfo).toBe(39)
   end)
 
-  suite.it('numbers effects and skills as @tes3 does', function()
+  suite.it('numbers effects and skills as @esm does', function()
     expect(records.EffectIndex.None).toBe(-1)
     expect(records.EffectIndex.WaterBreathing).toBe(0)
     expect(records.EffectIndex.Levitate).toBe(10)

@@ -32,7 +32,7 @@ each record is; one record's tables; and a megabyte of output: see `@tes3conv`'s
 and `compileTo`. A document is read from its file as it is needed, never whole.
 ]]
 
-local core = require '@tes3'
+local core = require '@esm'
 local fs = require '@dream/fs'
 local tes3conv = require '@tes3conv'
 

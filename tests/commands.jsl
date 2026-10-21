@@ -7,7 +7,7 @@
 local bytes = require '@dream/bytes'
 local commands = require '@tes3conv/commands'
 local fs = require '@dream/fs'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 local test = require '@jess/test'
 local expect = test.expect
 local suite = test.new()

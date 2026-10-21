@@ -17,7 +17,7 @@ tests = [
 ]
 
 [dependencies]
-"org.dreamweave.tes3" = "0.1"
+"org.dreamweave.esm" = "0.1"
 
 [modules]
 "@tes3conv" = "src/init.jsl"
@@ -35,7 +35,7 @@ tests = [
 
 [[layer]]
 id = "tes3conv.core"
-requires = ["tes3.core"]
+requires = ["esm.core"]
 exports = ["@tes3conv", "@tes3conv/records", "@tes3conv/commands", "@tes3conv/cli"]
 
 # The command line: `src/main.jsl` hands its arguments to `@tes3conv/cli`. A conversion reads the

@@ -11,7 +11,7 @@
 -- and so did every text and digest written out below. The program is never run from here.
 local bytes = require '@dream/bytes'
 local fs = require '@dream/fs'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 local tes3conv = require '@tes3conv'
 local test = require '@jess/test'
 local expect = test.expect
