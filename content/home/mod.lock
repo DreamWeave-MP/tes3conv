@@ -1,0 +1,51 @@
+{
+  "schema_version": "3",
+  "document": "lock",
+  "project": "aa093a63-c0e6-45e8-bc81-75f076e7c8b3",
+  "note": "Written by CI when a release tag is pushed: what each published release's archive contains. Do not edit.",
+  "releases": [
+    {
+      "version": "0.1.0",
+      "locked_from": "5c3e01f45032d4d7f7c63e8cb28ff0b6e8d75bcd",
+      "artifacts": [
+        {
+          "id": "jpk",
+          "format": "jpk",
+          "filename": "org.dreamweave.tes3conv-0.1.0.jpk",
+          "media_type": "application/vnd.jess.jpk",
+          "size": 135463,
+          "digests": {
+            "sha256": "d23c44c9d5cec9704451637dfa831e974936124978dee1defc8e428fc0c23dca"
+          },
+          "jess": {
+            "package": "org.dreamweave.tes3conv",
+            "jess_api": "1",
+            "content_digest": "746ef70ea9a175ff91bf610caf30552a7eea9cb68264de93280500d6aba30934",
+            "dependencies": {
+              "org.dreamweave.esm": "0.1"
+            }
+          }
+        }
+      ],
+      "runtimes": {},
+      "platforms": [],
+      "provides": [],
+      "relationships": [],
+      "components": [
+        {
+          "id": "main",
+          "name": "tes3conv",
+          "path": ".",
+          "required": true,
+          "default": true,
+          "requires": [],
+          "conflicts": [],
+          "suggested_with": []
+        }
+      ],
+      "groups": [],
+      "extensions": {},
+      "critical_extensions": []
+    }
+  ]
+}
